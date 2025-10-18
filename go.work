@@ -1,0 +1,12 @@
+go 1.25.1
+
+use (
+	./banking
+	./basics
+	./controlmachine
+	./coolfuncs
+	./decoder
+	./digitalclock
+	./gameserver
+	./namelessproblem
+)

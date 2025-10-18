@@ -1,0 +1,12 @@
+# Go
+bin/
+build/
+dist/
+*.exe
+*.test
+*.out
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
