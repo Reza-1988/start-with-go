@@ -9,4 +9,5 @@ use (
 	./digitalclock
 	./gameserver
 	./namelessproblem
+	./storemanager
 )

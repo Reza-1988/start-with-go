@@ -1,4 +1,4 @@
-# Start With Go
+## Start With Go
 
 This repository contains my personal Go (Golang) practice projects and exercises  
 from the **Quera Jump Backend Collage**.  
@@ -6,7 +6,7 @@ Each folder represents a standalone Go module that focuses on a different topic 
 
 ---
 
-## About the Repository
+### About the Repository
 
 This repo is part of my learning journey with **Go language** and **backend development**.  
 All exercises are based on problems provided in the *Quera Jump Backend course*,  
@@ -17,7 +17,7 @@ and all solutions are implemented by me.
 > The code and implementations in this repository are my own work.
 
 ---
-## Project Structure
+### Project Structure
 
 Each directory in this repository represents an **independent Go module**.  
 Every module contains its own `go.mod` and `go.sum` files,  
@@ -27,7 +27,7 @@ within a single monorepo.
 
 ---
 
-## How to Run Locally
+### How to Run Locally
 
 Clone the repository:
 
@@ -37,7 +37,7 @@ cd start-with-go
 ```
 ---
 
-## 🛠️ Tools & Environment
+### Tools & Environment
 
 | Tool / Concept | Description                                                                          |
 |----------------|--------------------------------------------------------------------------------------|
@@ -50,7 +50,7 @@ cd start-with-go
 | **Workspace** | Managed with `go.work` for testing all modules together                              |
 
 
-## License
+### License
 
 This repository is created for **educational purposes**.  
 All problem statements and exercise ideas belong to **[Quera](https://quera.org)**.  
@@ -61,6 +61,6 @@ but please give proper credit if you reuse or share any part of the code.
 
 ---
 
-## Thanks for visiting!
+### Thanks for visiting!
 
 If you’re also learning Go, feel free to fork this repo, explore the exercises, and learn together
