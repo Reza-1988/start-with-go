@@ -8,6 +8,7 @@ use (
 	./decoder
 	./digitalclock
 	./gameserver
+	./golangimplemention
 	./namelessproblem
 	./storemanager
 )
