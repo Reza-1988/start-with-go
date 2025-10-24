@@ -9,6 +9,8 @@ use (
 	./digitalclock
 	./gameserver
 	./golangimplemention
+	./heterogeneousinputoutput
 	./namelessproblem
 	./storemanager
+	./tested
 )
