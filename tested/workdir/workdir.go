@@ -1,6 +1,9 @@
 package workdir
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // you can use this library freely: "github.com/otiai10/copy"
 
@@ -94,4 +97,63 @@ func (w *WorkDir) Clone() *WorkDir {
 
 	// Return the fully cloned WorkDir instance.
 	return cloneWD
+}
+
+// ListFilesRoot returns the list of all file paths stored in the WorkDir.
+// The result includes all files (with their relative paths) in any subdirectory.
+func (w *WorkDir) ListFilesRoot() []string {
+	listFiles := make([]string, 0, len(w.files)) // initialize slice with enough capacity
+	for k := range w.files {
+		listFiles = append(listFiles, k)
+	}
+	return listFiles
+}
+
+// ListFilesIn returns all file paths that are under the given root directory,
+// recursively (e.g., "src", returns "src/main.go", "src/workdir/file1.go", ...).
+// It returns an error if the directory doesn't exist.
+func (w *WorkDir) ListFilesIn(root string) ([]string, error) {
+	// Ensure the directory exists; otherwise, return an error.
+	if _, ok := w.dirs[root]; !ok {
+		return nil, fmt.Errorf("directory does not exist: %s", root)
+	}
+	res := make([]string, 0)
+	prefix := root + "/"
+
+	// Pick every file whose path starts with "root/".
+	// This naturally includes files in subdirectories (recursive behavior).
+	for path := range w.files {
+		if strings.HasPrefix(path, prefix) {
+			res = append(res, path)
+		}
+	}
+	return res, nil
+}
+
+// CatFile returns the content of a file with the given path.
+// If the file does not exist in the WorkDir, it returns an error.
+func (w *WorkDir) CatFile(file string) (string, error) {
+	// Try to get the file content from the map.
+	content, ok := w.files[file]
+	if !ok {
+		// Return an error if the file doesn't exist.
+		return "", fmt.Errorf("file does not exist: %s", file)
+	}
+
+	// Return the file content and no error.
+	return content, nil
+}
+
+// AppendToFile adds new content to the end of an existing file.
+// If the file does not exist, it returns an error.
+func (w *WorkDir) AppendToFile(file string, newContent string) error {
+	oldContent, ok := w.files[file]
+	if !ok {
+		return fmt.Errorf("file does not exist: %s", file)
+	}
+
+	// Update the map with the new (concatenated) content
+	w.files[file] = oldContent + newContent
+
+	return nil
 }
