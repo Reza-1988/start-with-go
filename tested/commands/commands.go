@@ -1,6 +1,9 @@
 package commands
 
 import (
+	"fmt"
+	"strconv"
+	"strings"
 	"vc/workdir"
 )
 
@@ -186,6 +189,65 @@ func (v *VC) Log() []string {
 	return log
 }
 
-func (v *VC) Checkout(number string) (*workdir.WorkDir, error) {
+// Checkout returns a snapshot of the WorkDir from a previous commit,
+// similar to the `git checkout` command. It supports two reference syntaxes:
+//
+//	"~N"  → go N commits back from the latest commit (HEAD~N)
+//	"^^^" → number of '^' equals how many commits to go back (HEAD^^^ = HEAD~3)
+//
+// Example:
+//
+//	"~1"  → previous commit
+//	"~2"  → two commits before the last
+//	"^"   → previous commit (same as "~1")
+//	"^^"  → two commits before the last
+//
+// Returns a *cloned* WorkDir so that changes to the result do not
+// affect the repository’s stored history.
+func (v *VC) Checkout(symbol string) (*workdir.WorkDir, error) {
+	// 1. Ensure we have commits to work with.
+	if len(v.commits) == 0 {
+		return nil, fmt.Errorf("no commits to checkout")
+	}
 
+	steps := 0 // how many commits to go back
+
+	// 2. Determine how many steps to move back in history.
+	switch {
+	case strings.HasPrefix(symbol, "~"):
+		// Handle "~N" form. Extract the number after "~".
+		nStr := strings.TrimPrefix(symbol, "~")
+
+		// Convert string to integer (e.g., "~2" → 2).
+		n, err := strconv.Atoi(nStr)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("invalid ref: %s", symbol)
+		}
+
+		steps = n
+
+	case strings.Trim(symbol, "^") == "" && len(symbol) > 0:
+		// Handle repeated "^" form (e.g., "^", "^^", "^^^").
+		// The number of carets equals how far to go back.
+		steps = len(symbol)
+
+	default:
+		// Unsupported format (anything other than "~N" or "^...").
+		return nil, fmt.Errorf("unsupported ref: %s", symbol)
+	}
+
+	// 3. Calculate which commit index to check out.
+	// The latest commit is at index len(v.commits)-1 (HEAD).
+	// So we go backwards by 'steps'.
+	idx := len(v.commits) - 1 - steps
+
+	// Check if the calculated index is valid.
+	if idx < 0 || idx >= len(v.commits) {
+		return nil, fmt.Errorf("ref out of range: %s", symbol)
+	}
+
+	// 4. Return a cloned snapshot of the target commit.
+	// Clone ensures that any edits made to this WorkDir do not
+	// modify the stored commit snapshot in history.
+	return v.commits[idx].snapshot.Clone(), nil
 }
