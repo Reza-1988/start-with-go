@@ -1,4 +1,4 @@
-module github.com/Reza-1988/start-with-go/calaulaterapi
+module github.com/Reza-1988/start-with-go/calculatorapi
 
 go 1.25.1
 
