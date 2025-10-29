@@ -3,6 +3,7 @@ go 1.25.1
 use (
 	./banking
 	./basics
+	./calculaterapi
 	./controlmachine
 	./coolfuncs
 	./decoder
@@ -11,6 +12,7 @@ use (
 	./golangimplemention
 	./heterogeneousinputoutput
 	./namelessproblem
+	./gohttpclient
 	./storemanager
 	./tested
 )
