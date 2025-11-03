@@ -9,10 +9,11 @@ use (
 	./decoder
 	./digitalclock
 	./gameserver
+	./gohttpclient
 	./golangimplemention
 	./heterogeneousinputoutput
 	./namelessproblem
-	./gohttpclient
+	./onlinelibrary
 	./storemanager
 	./tested
 )
