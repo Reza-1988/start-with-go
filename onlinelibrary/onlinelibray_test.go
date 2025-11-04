@@ -21,13 +21,37 @@ const (
 
 var serverSingleton *Server
 
+// getServer ensures that only ONE instance of the server is created and running.
+// This function follows the Singleton pattern:
+//
+// Why we need this:
+// ------------------
+//   - In Go tests, each test can run independently.
+//   - If every test tried to start the server on the same port, we would get:
+//     "address already in use"
+//   - By checking if `serverSingleton` is nil, we guarantee:
+//     → NewServer() + Start() is executed ONLY ONCE during all tests.
+//
+// How it works:
+// -------------
+//   - The first time getServer() is called, serverSingleton == nil:
+//     → create the server
+//     → start it in a goroutine so the test thread does not block
+//   - Subsequent calls simply return the already-running server.
 func getServer() *Server {
 	if serverSingleton == nil {
-		serverSingleton = NewServer(port)
+		serverSingleton = NewServer(port) // create the server only once
+
+		// Start server in background goroutine
+		// This allows the test execution to continue without blocking.
 		go serverSingleton.Start()
+
+		// A small delay to give the server time to start listening on the port.
+		// If we remove this delay, tests may try to connect before the server is ready.
 		time.Sleep(1000 * time.Millisecond)
 	}
-	return serverSingleton
+
+	return serverSingleton // always return the same running instance
 }
 
 func TestServerCreation(t *testing.T) {
@@ -41,35 +65,72 @@ type responseForm struct {
 }
 
 func addBook(title, author string, duplicate bool) error {
+
+	// Build the request body as FORM data (not JSON).
+	// The test uses: http.DefaultClient.PostForm(...)
+	// So the server must read values using r.ParseForm() / r.FormValue("title")
 	data := url.Values{
 		"title":  []string{title},
 		"author": []string{author},
 	}
 
+	// Send POST /book request.
+	// PostForm automatically encodes data using:
+	//     Content-Type: application/x-www-form-urlencoded
 	resp, err := http.DefaultClient.PostForm(path+"/book", data)
 	if err != nil {
+		// Network / connection failure (server not running?)
 		return err
 	}
 	defer resp.Body.Close()
+
+	// In this test suite, POST should always return 200,
+	// even when the book already exists in the library.
 	if resp.StatusCode != http.StatusOK {
-		return errors.New(fmt.Sprintf("status code not OK: %d", resp.StatusCode))
+		return fmt.Errorf("status code not OK: %d", resp.StatusCode)
 	}
 
+	// This struct matches: {"Result": "...", "Error": "..."}
 	var rf responseForm
 
-	err = json.NewDecoder(resp.Body).Decode(&rf)
-	if err != nil {
+	// Decode server JSON response into struct.
+	// If the JSON cannot be unmarshalled, something is wrong on server-side.
+	if err := json.NewDecoder(resp.Body).Decode(&rf); err != nil {
 		return err
 	}
 
-	if rf.Result != fmt.Sprintf("added book %s by %s", strings.ToLower(title), strings.ToLower(author)) && !duplicate {
-		return errors.New(fmt.Sprintf("result message is incorrect: %s", rf.Result))
+	// When duplicate == false
+	// We expect the newly added book message:
+	//     "added book <title> by <author>"
+	// Test compares values in lowercase, so we lowercase title and author.
+	expectedAddMsg := fmt.Sprintf(
+		"added book %s by %s",
+		strings.ToLower(title),
+		strings.ToLower(author),
+	)
+
+	// If this is NOT duplicate, server *must* send the "added book..." message.
+	if !duplicate && rf.Result != expectedAddMsg {
+		return fmt.Errorf("unexpected result: %s", rf.Result)
 	}
 
-	if rf.Result == fmt.Sprintf("this book is already in the library") && duplicate {
+	// When duplicate == true, it means the test EXPECTS the book to already exist.
+	// In that case, the correct server response should be:
+	//     "this book is already in the library"
+	//
+	// Important:
+	// ----------
+	// Returning an error here does NOT mean something went wrong!
+	// In the context of the test, returning an error is how we SIGNAL
+	// that the duplicate-case behavior occurred as expected.
+	// The test calling this function will check for a non-nil error and PASS.
+	//
+	// In short: error here = expected result for duplicate add attempt.
+	if duplicate && rf.Result == "this book is already in the library" {
 		return errors.New(rf.Result)
 	}
 
+	// No errors → request was valid and behavior matched expectations.
 	return nil
 }
 
@@ -84,30 +145,42 @@ type testBook struct {
 }
 
 func getBook(title, author string) (testBook, error) {
+	// Encode query parameters to make them URL-safe.
+	// e.g., "Alice in Wonderland" => "Alice%20in%20Wonderland"
+	// Prevents breaking the URL when there are spaces or special characters (&, ?, =, /, ...).
 	title = url.QueryEscape(title)
 	author = url.QueryEscape(author)
 
+	// Build and send GET /book?title=...&author=...
+	// The server is expected to read title/author from the query string.
 	resp, err := http.DefaultClient.Get(fmt.Sprintf("%s/book?title=%s&author=%s", path, title, author))
 	if err != nil {
+		// Network/connection error (server not reachable, DNS, etc.)
 		return testBook{}, err
 	}
 	defer resp.Body.Close()
 
+	// Contract: on success, server must return 200 OK.
+	// Any other status means the request did not meet the requirements
+	// (e.g., missing params, book not found, or borrowed).
 	if resp.StatusCode != http.StatusOK {
-		return testBook{}, errors.New(fmt.Sprintf("invalid status code %d", resp.StatusCode))
+		return testBook{}, fmt.Errorf("invalid status code %d", resp.StatusCode)
 	}
 
+	// Read the response body fully.
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return testBook{}, err
 	}
 
+	// Expected success payload shape: {"title":"...", "author":"..."}
 	var result testBook
-	err = json.Unmarshal(body, &result)
-	if err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
+		// Malformed JSON or unexpected response schema from server.
 		return testBook{}, err
 	}
 
+	// Return the parsed book info to the test.
 	return result, nil
 }
 
