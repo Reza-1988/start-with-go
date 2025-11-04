@@ -55,7 +55,7 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(ErrorResponse{
 				Result: "",
-				Error:  "Error reading request body",
+				Error:  "title or author cannot be empty",
 			})
 			return
 		}
@@ -65,10 +65,12 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(ErrorResponse{
 				Result: "",
-				Error:  "Error the format is incorrect",
+				Error:  "title or author cannot be empty",
 			})
 			return
 		}
+		input.Title = strings.TrimSpace(input.Title)
+		input.Author = strings.TrimSpace(input.Author)
 		if input.Title == "" || input.Author == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(ErrorResponse{
@@ -78,8 +80,8 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// logic of adding books
-		t := strings.ToLower(strings.TrimSpace(input.Title))
-		a := strings.ToLower(strings.TrimSpace(input.Author))
+		t := strings.ToLower(input.Title)
+		a := strings.ToLower(input.Author)
 		key := t + "|" + a
 
 		if _, ok := s.books[key]; ok {
@@ -96,16 +98,17 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			Borrowed: false,
 		}
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(BookResponse{
-			Title:  input.Title,
-			Author: input.Author,
+		json.NewEncoder(w).Encode(ErrorResponse{
+			Result: fmt.Sprintf("add book %s by %s", input.Title, input.Author),
+			Error:  "",
 		})
 		return
+
 	// GET Methode
 	case http.MethodGet:
-		tQuery := r.URL.Query().Get("title")
-		aQuery := r.URL.Query().Get("author")
-		if (strings.TrimSpace(tQuery) == "") || (strings.TrimSpace(aQuery) == "") {
+		title := strings.TrimSpace(r.URL.Query().Get("title"))
+		author := strings.TrimSpace(r.URL.Query().Get("author"))
+		if title == "" || author == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(ErrorResponse{
 				Result: "",
@@ -115,8 +118,8 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// logic of return book information
-		t := strings.ToLower(strings.TrimSpace(tQuery))
-		a := strings.ToLower(strings.TrimSpace(aQuery))
+		t := strings.ToLower(title)
+		a := strings.ToLower(author)
 		key := t + "|" + a
 		b, ok := s.books[key]
 		if !ok {
@@ -140,6 +143,101 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			Title:  b.Title,
 			Author: b.Author,
 		})
+		return
+
+	// PUT method
+	case http.MethodPut:
+		title := strings.TrimSpace(r.URL.Query().Get("title"))
+		author := strings.TrimSpace(r.URL.Query().Get("author"))
+
+		if title == "" || author == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Result: "",
+				Error:  "title or author cannot be empty",
+			})
+			return
+		}
+		// Body must be: { "borrow": true|false }
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Result: "",
+				Error:  "borrow value cannot be empty",
+			})
+			return
+		}
+		// We use *bool (a pointer to bool) instead of bool to distinguish three cases:
+		// 1. borrow = true   → user wants to borrow the book
+		// 2. borrow = false  → user wants to return the book
+		// 3. borrow is missing from the request body → invalid request
+		//
+		// If we use a plain `bool`, missing "borrow" would automatically become `false`
+		// (the zero-value of bool), making it impossible to know whether the user
+		// really sent `false` or omitted the field entirely. Using *bool allows us to
+		// detect the absence of the field because the value will be `nil` when not provided.
+
+		var payload struct {
+			Borrow *bool `json:"borrow"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil || payload.Borrow == nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Result: "",
+				Error:  "borrow value cannot be empty",
+			})
+			return
+		}
+
+		t := strings.ToLower(title)
+		a := strings.ToLower(author)
+		key := t + "|" + a
+		b, ok := s.books[key]
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Result: "",
+				Error:  "this book does not exist",
+			})
+			return
+		}
+		if *payload.Borrow {
+			if b.Borrowed {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(ErrorResponse{
+					Result: "",
+					Error:  "this book is already borrowed",
+				})
+				return
+			}
+			b.Borrowed = true
+			s.books[key] = b
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Result: "you have borrowed this book successfully",
+				Error:  "",
+			})
+			return
+		} else {
+			if !b.Borrowed {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(ErrorResponse{
+					Result: "",
+					Error:  "this book is already in the library",
+				})
+				return
+			}
+			b.Borrowed = false
+			s.books[key] = b
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Result: "thank you for returning this book",
+				Error:  "",
+			})
+			return
+		}
+
 	}
 
 }
