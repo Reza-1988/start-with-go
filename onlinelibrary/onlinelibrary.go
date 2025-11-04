@@ -14,8 +14,8 @@ type Server struct {
 }
 
 type ErrorResponse struct {
-	Result string `json:"result"`
-	Error  string `json:"error"`
+	Result string `json:"Result"`
+	Error  string `json:"Error"`
 }
 
 type BookResponse struct {
@@ -48,9 +48,9 @@ func (s *Server) Start() {
 func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	switch r.Method {
-	// POST Methode
+	// POST METHODE
 	case http.MethodPost:
-		body, err := io.ReadAll(r.Body)
+		err := r.ParseForm()
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(ErrorResponse{
@@ -59,9 +59,10 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		var input Book
-		er := json.Unmarshal(body, &input)
-		if er != nil {
+		rawTitle := strings.TrimSpace(r.FormValue("title"))
+		rawAuthor := strings.TrimSpace(r.FormValue("author"))
+
+		if rawTitle == "" || rawAuthor == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(ErrorResponse{
 				Result: "",
@@ -69,42 +70,34 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		input.Title = strings.TrimSpace(input.Title)
-		input.Author = strings.TrimSpace(input.Author)
-		if input.Title == "" || input.Author == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(ErrorResponse{
-				Result: "",
-				Error:  "title or author cannot be empty",
-			})
-			return
-		}
-		// logic of adding books
-		t := strings.ToLower(input.Title)
-		a := strings.ToLower(input.Author)
+
+		t := strings.ToLower(rawTitle)
+		a := strings.ToLower(rawAuthor)
 		key := t + "|" + a
 
 		if _, ok := s.books[key]; ok {
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(ErrorResponse{
 				Result: "this book is already in the library",
+				Error:  "",
 			})
 			return
 		}
+
 		// Add new book (keep user initials)
 		s.books[key] = Book{
-			Title:    input.Title,
-			Author:   input.Author,
+			Title:    t,
+			Author:   a,
 			Borrowed: false,
 		}
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(ErrorResponse{
-			Result: fmt.Sprintf("add book %s by %s", input.Title, input.Author),
+			Result: fmt.Sprintf("added book %s by %s", t, a),
 			Error:  "",
 		})
 		return
 
-	// GET Methode
+	// GET METHODE
 	case http.MethodGet:
 		title := strings.TrimSpace(r.URL.Query().Get("title"))
 		author := strings.TrimSpace(r.URL.Query().Get("author"))
@@ -145,7 +138,7 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 
-	// PUT method
+	// PUT METHODE
 	case http.MethodPut:
 		title := strings.TrimSpace(r.URL.Query().Get("title"))
 		author := strings.TrimSpace(r.URL.Query().Get("author"))
@@ -237,7 +230,37 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-
+	// DELETE METHODE
+	case http.MethodDelete:
+		title := strings.TrimSpace(r.URL.Query().Get("title"))
+		author := strings.TrimSpace(r.URL.Query().Get("author"))
+		if title == "" || author == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Result: "",
+				Error:  "title or author cannot be empty",
+			})
+			return
+		}
+		t := strings.ToLower(title)
+		a := strings.ToLower(author)
+		key := t + "|" + a
+		_, ok := s.books[key]
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Result: "",
+				Error:  "this book does not exist",
+			})
+			return
+		}
+		delete(s.books, key)
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(ErrorResponse{
+			Result: "successfully deleted",
+			Error:  "",
+		})
+		return
 	}
 
 }
