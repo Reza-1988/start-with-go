@@ -48,6 +48,7 @@ func (s *Server) Start() {
 func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	switch r.Method {
+	// POST Methode
 	case http.MethodPost:
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -100,6 +101,45 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			Author: input.Author,
 		})
 		return
+	// GET Methode
+	case http.MethodGet:
+		tQuery := r.URL.Query().Get("title")
+		aQuery := r.URL.Query().Get("author")
+		if (strings.TrimSpace(tQuery) == "") || (strings.TrimSpace(aQuery) == "") {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Result: "",
+				Error:  "title or author cannot be empty",
+			})
+			return
+		}
+
+		// logic of return book information
+		t := strings.ToLower(strings.TrimSpace(tQuery))
+		a := strings.ToLower(strings.TrimSpace(aQuery))
+		key := t + "|" + a
+		b, ok := s.books[key]
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Result: "",
+				Error:  "this book does not exist",
+			})
+			return
+		}
+		if b.Borrowed {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Result: "",
+				Error:  "this book is borrowed",
+			})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(BookResponse{
+			Title:  b.Title,
+			Author: b.Author,
+		})
 	}
 
 }
