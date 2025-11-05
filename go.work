@@ -16,4 +16,5 @@ use (
 	./onlinelibrary
 	./storemanager
 	./tested
+	./weatherapi
 )
