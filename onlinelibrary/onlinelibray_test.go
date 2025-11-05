@@ -21,13 +21,13 @@ const (
 
 var serverSingleton *Server
 
-// getServer ensures that only ONE instance of the server is created and running.
+// getServer ensures that only ONE instance of the server_httpclient is created and running.
 // This function follows the Singleton pattern:
 //
 // Why we need this:
 // ------------------
 //   - In Go tests, each test can run independently.
-//   - If every test tried to start the server on the same port, we would get:
+//   - If every test tried to start the server_httpclient on the same port, we would get:
 //     "address already in use"
 //   - By checking if `serverSingleton` is nil, we guarantee:
 //     → NewServer() + Start() is executed ONLY ONCE during all tests.
@@ -35,19 +35,19 @@ var serverSingleton *Server
 // How it works:
 // -------------
 //   - The first time getServer() is called, serverSingleton == nil:
-//     → create the server
+//     → create the server_httpclient
 //     → start it in a goroutine so the test thread does not block
-//   - Subsequent calls simply return the already-running server.
+//   - Subsequent calls simply return the already-running server_httpclient.
 func getServer() *Server {
 	if serverSingleton == nil {
-		serverSingleton = NewServer(port) // create the server only once
+		serverSingleton = NewServer(port) // create the server_httpclient only once
 
-		// Start server in background goroutine
+		// Start server_httpclient in background goroutine
 		// This allows the test execution to continue without blocking.
 		go serverSingleton.Start()
 
-		// A small delay to give the server time to start listening on the port.
-		// If we remove this delay, tests may try to connect before the server is ready.
+		// A small delay to give the server_httpclient time to start listening on the port.
+		// If we remove this delay, tests may try to connect before the server_httpclient is ready.
 		time.Sleep(1000 * time.Millisecond)
 	}
 
@@ -68,7 +68,7 @@ func addBook(title, author string, duplicate bool) error {
 
 	// Build the request body as FORM data (not JSON).
 	// The test uses: http.DefaultClient.PostForm(...)
-	// So the server must read values using r.ParseForm() / r.FormValue("title")
+	// So the server_httpclient must read values using r.ParseForm() / r.FormValue("title")
 	data := url.Values{
 		"title":  []string{title},
 		"author": []string{author},
@@ -79,7 +79,7 @@ func addBook(title, author string, duplicate bool) error {
 	//     Content-Type: application/x-www-form-urlencoded
 	resp, err := http.DefaultClient.PostForm(path+"/book", data)
 	if err != nil {
-		// Network / connection failure (server not running?)
+		// Network / connection failure (server_httpclient not running?)
 		return err
 	}
 	defer resp.Body.Close()
@@ -93,8 +93,8 @@ func addBook(title, author string, duplicate bool) error {
 	// This struct matches: {"Result": "...", "Error": "..."}
 	var rf responseForm
 
-	// Decode server JSON response into struct.
-	// If the JSON cannot be unmarshalled, something is wrong on server-side.
+	// Decode server_httpclient JSON response into struct.
+	// If the JSON cannot be unmarshalled, something is wrong on server_httpclient-side.
 	if err := json.NewDecoder(resp.Body).Decode(&rf); err != nil {
 		return err
 	}
@@ -109,13 +109,13 @@ func addBook(title, author string, duplicate bool) error {
 		strings.ToLower(author),
 	)
 
-	// If this is NOT duplicate, server *must* send the "added book..." message.
+	// If this is NOT duplicate, server_httpclient *must* send the "added book..." message.
 	if !duplicate && rf.Result != expectedAddMsg {
 		return fmt.Errorf("unexpected result: %s", rf.Result)
 	}
 
 	// When duplicate == true, it means the test EXPECTS the book to already exist.
-	// In that case, the correct server response should be:
+	// In that case, the correct server_httpclient response should be:
 	//     "this book is already in the library"
 	//
 	// Important:
@@ -152,15 +152,15 @@ func getBook(title, author string) (testBook, error) {
 	author = url.QueryEscape(author)
 
 	// Build and send GET /book?title=...&author=...
-	// The server is expected to read title/author from the query string.
+	// The server_httpclient is expected to read title/author from the query string.
 	resp, err := http.DefaultClient.Get(fmt.Sprintf("%s/book?title=%s&author=%s", path, title, author))
 	if err != nil {
-		// Network/connection error (server not reachable, DNS, etc.)
+		// Network/connection error (server_httpclient not reachable, DNS, etc.)
 		return testBook{}, err
 	}
 	defer resp.Body.Close()
 
-	// Contract: on success, server must return 200 OK.
+	// Contract: on success, server_httpclient must return 200 OK.
 	// Any other status means the request did not meet the requirements
 	// (e.g., missing params, book not found, or borrowed).
 	if resp.StatusCode != http.StatusOK {
@@ -176,7 +176,7 @@ func getBook(title, author string) (testBook, error) {
 	// Expected success payload shape: {"title":"...", "author":"..."}
 	var result testBook
 	if err := json.Unmarshal(body, &result); err != nil {
-		// Malformed JSON or unexpected response schema from server.
+		// Malformed JSON or unexpected response schema from server_httpclient.
 		return testBook{}, err
 	}
 

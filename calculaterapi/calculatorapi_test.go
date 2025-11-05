@@ -23,29 +23,29 @@ type Response struct {
 	Error  string `json:"error"`
 }
 
-// Global variable to keep a reference to the started server
+// Global variable to keep a reference to the started server_httpclient
 // (so it won't start multiple instances)
 var testServer *Server
 
-// Helper function to start server once and return it.
-// Runs server in a goroutine (non-blocking) so tests can continue.
+// Helper function to start server_httpclient once and return it.
+// Runs server_httpclient in a goroutine (non-blocking) so tests can continue.
 func getServer() *Server {
 	if testServer == nil {
 		testServer = NewServer(port)
 
-		// Start server in a new goroutine
+		// Start server_httpclient in a new goroutine
 		// Without "go", Start() blocks forever and test does not run
 		go testServer.Start()
 	}
 
-	// Give server a short moment to fully start (port binding)
+	// Give server_httpclient a short moment to fully start (port binding)
 	time.Sleep(100 * time.Millisecond)
 	return testServer
 }
 
 // ------------ TESTS ------------
 
-// Ensures that the server object can be created successfully
+// Ensures that the server_httpclient object can be created successfully
 func TestSampleCreation(t *testing.T) {
 	s := getServer()
 
@@ -57,8 +57,8 @@ func TestSampleCreation(t *testing.T) {
 func TestSampleServerStart(t *testing.T) {
 	getServer()
 
-	// net.Dial tries to connect to the server TCP port.
-	// If server is not running, err will NOT be nil.
+	// net.Dial tries to connect to the server_httpclient TCP port.
+	// If server_httpclient is not running, err will NOT be nil.
 	conn, err := net.Dial("tcp", "localhost:"+port)
 
 	assert.Nil(t, err) // connection should succeed

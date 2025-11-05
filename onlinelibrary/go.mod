@@ -1,4 +1,4 @@
-module onlinelibrary
+module github.com/Reza-1988/start-with-go/onlinelibrary
 
 go 1.25.1
 

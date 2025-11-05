@@ -181,9 +181,9 @@ func (s *Server) Start() {
 	http.HandleFunc("/add", s.handleAdd) // GET /add?numbers=...
 	http.HandleFunc("/sub", s.handleSub) // GET /sub?numbers=...
 
-	// Start the HTTP server; log if it fails (e.g., port already in use)
+	// Start the HTTP server_httpclient; log if it fails (e.g., port already in use)
 	if err := http.ListenAndServe(":"+s.Port, nil); err != nil {
-		fmt.Println("server error:", err)
+		fmt.Println("server_httpclient error:", err)
 	}
 }
 

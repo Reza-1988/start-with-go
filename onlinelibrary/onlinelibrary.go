@@ -40,7 +40,7 @@ func NewServer(port string) *Server {
 func (s *Server) Start() {
 	http.HandleFunc("/book", s.handleLibrary)
 	if err := http.ListenAndServe(":"+s.Port, nil); err != nil {
-		fmt.Println("server error:", err)
+		fmt.Println("server_httpclient error:", err)
 	}
 
 }
