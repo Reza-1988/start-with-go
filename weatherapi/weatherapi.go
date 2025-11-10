@@ -3,9 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/joho/godotenv"
 	"net/http"
 	"os"
+
+	"github.com/joho/godotenv"
 )
 
 // This struct represents only the JSON fields we need from the API response.
