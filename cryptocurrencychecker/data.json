@@ -1,0 +1,10 @@
+{
+  "btc-rls": {
+    "status": "OK",
+    "stats": { "btc-rls": { "latest": "..." } }
+  },
+  "btc-usdt": {
+    "status": "OK",
+    "stats": { "btc-usdt": { "latest": "..." } }
+  }
+}

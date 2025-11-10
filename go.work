@@ -6,6 +6,7 @@ use (
 	./calculaterapi
 	./controlmachine
 	./coolfuncs
+	./cryptocurrencychecker
 	./decoder
 	./digitalclock
 	./gameserver
