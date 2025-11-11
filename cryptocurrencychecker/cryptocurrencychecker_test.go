@@ -13,114 +13,152 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// startServer starts a mock HTTP server used ONLY during tests.
-// This server simulates the API specified in the assignment.
+//
+// ──────────────────────────────────────────────────────────────────────────────
+//  MOCK SERVER
+// ──────────────────────────────────────────────────────────────────────────────
+//
+// startServer spins up a tiny in-memory HTTP server that mimics the assignment's API.
+// - It reads exchange data from a local JSON file (data.json)
+// - It exposes the endpoint: /rates?srcCurrency=<src>&dstCurrency=<dst>
+// - It returns a JSON payload with the shape:
+//     {
+//       "status": "OK",
+//       "stats": { "btc-rls": { "latest": "28650.385" } }
+//     }
+// Notes:
+//   • This server is ONLY for tests. The production solution should call the real API.
+//   • We run it in a goroutine so the test can continue executing concurrently.
+//   • It binds to port :4001; make sure this port is free when running tests.
+//
 func startServer() {
-
-	// Represents the inner JSON structure: { "latest": "1234.56" }
+	// Minimal JSON shapes matching the mock API’s contract:
 	type stats struct {
-		Latest string `json:"latest"`
+		Latest string `json:"latest"` // the numeric price as a string
 	}
-
-	// Represents one valid API response structure
-	// {
-	//   "status": "OK",
-	//   "stats": { "btc-rls": { "latest":"28650.385" } }
-	// }
 	type information struct {
-		Status string           `json:"status"`
-		Stats  map[string]stats `json:"stats"`
+		Status string           `json:"status"` // expected to be "OK" for success
+		Stats  map[string]stats `json:"stats"`  // e.g., "btc-rls" -> { latest: "..." }
 	}
 
-	// datalist will hold all valid exchange rates loaded from data.json
-	var datalist = make(map[string]information)
+	// datalist holds many entries keyed by "<src>-<dst>" (e.g., "btc-rls", "btc-usdt", ...)
+	// The file data.json must decode into: map[string]information
+	datalist := make(map[string]information)
 
-	// Load exchange rates from local file data.json
+	// Open the dataset file that drives server responses.
+	// TIP: data.json must be located in the SAME directory where you run `go test`.
 	f, err := os.Open("data.json")
 	if err != nil {
-		// If the file doesn't exist, the test cannot proceed
+		// We panic here because the mock server cannot function without data.
 		panic(err)
 	}
 	defer f.Close()
 
-	// Decode JSON file into map[string]information
-	err = json.NewDecoder(f).Decode(&datalist)
-	if err != nil {
+	// Decode the JSON file into our in-memory datastore (datalist).
+	if err := json.NewDecoder(f).Decode(&datalist); err != nil {
 		panic(err)
 	}
 
-	// Setup endpoint: /rates?srcCurrency=btc&dstCurrency=rls
+	// Register a single handler for /rates that validates query params and responds accordingly.
 	http.HandleFunc("/rates", func(w http.ResponseWriter, r *http.Request) {
+		// Extract query parameters (expected lowercase in this mock).
 		src := r.URL.Query().Get("srcCurrency")
 		dst := r.URL.Query().Get("dstCurrency")
 
-		// Construct key like "btc-rls" and check if we have data for it
-		if info, ok := datalist[fmt.Sprintf("%s-%s", src, dst)]; ok {
-			w.WriteHeader(http.StatusOK)
+		// Build the composite key (e.g., "btc-rls") to look up the rate.
+		key := fmt.Sprintf("%s-%s", src, dst)
+
+		// If we have a matching record, return 200 + JSON.
+		if info, ok := datalist[key]; ok {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(info)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(info)
 			return
 		}
 
-		// If key was not found → return HTTP 400
+		// Otherwise signal a client error (bad request).
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("Invalid Requests"))
+		_, _ = w.Write([]byte("Invalid Requests"))
 	})
 
-	// Start server (blocking call) - so use goroutine in tests
+	// Blocking call: this will keep serving until the process exits.
+	// In tests we call it inside a goroutine so the test can continue.
 	log.Fatal(http.ListenAndServe(":4001", nil))
 }
 
-// Struct used only inside tests for validation
+//
+// ──────────────────────────────────────────────────────────────────────────────
+//  TEST-ONLY RESPONSE TYPES
+// ──────────────────────────────────────────────────────────────────────────────
+//
+// These types are used only inside the test to decode the mock server’s response
+// (so we can assert against what the mock server returns).
+//
 type sampleTestExchangeResponse struct {
 	Status string                    `json:"status"`
 	Stats  map[string]sampleTestStat `json:"stats"`
 }
 
-// Represents { "latest": "value" } inside test JSON
 type sampleTestStat struct {
 	Latest string `json:"latest"`
 }
 
-// TEST CASE:
-// Ensures that GetExchangeRate("BTC", "") returns correct RLS (rial) price.
+//
+// ──────────────────────────────────────────────────────────────────────────────
+//  TEST CASE
+// ──────────────────────────────────────────────────────────────────────────────
+//
+// TestSampleGetBTCtoRials verifies that:
+//  1) Our solution function GetExchangeRate("BTC", "") correctly defaults dst="rls"
+//  2) It hits the right URL and parses the JSON shape properly
+//  3) The returned string equals the mock API’s "latest" field for key "btc-rls"
+//
+// Why assert against the mock server’s own response?
+// - This makes the test robust against data changes in data.json
+// - We’re not hard-coding the expected price; we assert “function result == server truth”
+//
+// Concurrency notes:
+// - The mock server runs in a goroutine
+// - We sleep briefly to allow the server to start listening before making the first request
+//   (In production you might coordinate with sync primitives instead of Sleep.)
+//
 func TestSampleGetBTCtoRials(t *testing.T) {
-
-	// Start the fake API server in background
+	// 1) Boot the mock server in the background.
 	go startServer()
 
-	// Wait a bit so server starts before requesting
+	// 2) Give the server a moment to bind to :4001 (quick and dirty; enough for tests).
 	time.Sleep(30 * time.Millisecond)
 
-	// Call function we are testing
+	// 3) Call the function under test: it should default destination to "rls" when empty.
 	result, err := GetExchangeRate("BTC", "")
 	if err != nil {
-		t.Errorf("Expected no errors, but got: %s", err.Error())
+		t.Fatalf("Expected no error from GetExchangeRate, got: %v", err)
 	}
 
-	// Make the *same* request manually to compare result
+	// 4) Independently call the same mock endpoint to obtain the ground-truth JSON.
 	resp, err := http.DefaultClient.Get("http://localhost:4001/rates?srcCurrency=btc&dstCurrency=rls")
 	if err != nil {
-		t.Errorf("Expected no errors, but got: %s", err.Error())
+		t.Fatalf("Expected no error requesting mock server, got: %v", err)
 	}
 	defer resp.Body.Close()
 
-	// Read response body
-	b, err := io.ReadAll(resp.Body)
+	// 5) Read and decode the mock server’s JSON payload.
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Errorf("Error reading server response: %s", err.Error())
+		t.Fatalf("Failed reading mock response body: %v", err)
 	}
 
-	// Decode server JSON into struct
-	var response sampleTestExchangeResponse
-	err = json.Unmarshal(b, &response)
-	if err != nil {
-		t.Errorf("JSON decoding failed: %s", err.Error())
+	var serverPayload sampleTestExchangeResponse
+	if err := json.Unmarshal(body, &serverPayload); err != nil {
+		t.Fatalf("Failed decoding mock response JSON: %v", err)
 	}
 
-	// Extract expected value
-	expected := response.Stats["btc-rls"].Latest
+	// 6) Extract the expected "latest" value for key "btc-rls".
+	key := "btc-rls"
+	expected := serverPayload.Stats[key].Latest
 
-	// ✅ Compare function output with expected server response
-	assert.Equal(t, expected, result)
+	// 7) Assertion:
+	//    The function’s result must match the mock server’s "latest" field.
+	assert.Equal(t, expected, result,
+		"GetExchangeRate result must equal server's 'latest' for %s", key)
 }
