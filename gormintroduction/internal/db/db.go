@@ -114,24 +114,64 @@ func initializeDB() error {
 	)
 
 	// 5) Open the database connection via GORM.
+	//
+	// At this step we are creating the high-level GORM connection object (*gorm.DB).
+	// This is the ORM layer. It does NOT represent the actual raw database connections.
+	// Instead, it is a feature-rich wrapper around the lower-level *sql.DB.
+	//
+	// - It knows how to map Go structs to tables
+	// - It can build SQL queries for us
+	// - It handles model-based operations (Create, Find, Update, etc.)
+	// - It provides hooks, logging, migrations, and many ORM features
+	//
+	// IMPORTANT:
+	// gorm.Open() does NOT immediately open a network connection.
+	// It prepares the ORM and only initializes the underlying *sql.DB internally.
 	conn, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
-		Logger: gormLogger,
-		// Add more GORM config here if needed (e.g., NowFunc, DisableForeignKeyConstraintWhenMigrating, etc.)
+		Logger: gormLogger, // GORM uses this logger for SQL query logs and slow-query warnings
 	})
 	if err != nil {
 		return fmt.Errorf("open mysql connection: %w", err)
 	}
 
 	// 6) Extract the underlying *sql.DB to tune the pool and do health checks.
+	//
+	// Even though GORM gives us *gorm.DB (conn), the actual database connection pool
+	// lives inside the standard library type *sql.DB.
+	//
+	// We MUST extract it when we want to:
+	//
+	// - Configure connection pooling limits (max open / max idle connections)
+	// - Configure connection lifetime limits
+	// - Run health checks (Ping, PingContext)
+	// - Close the database (sqlDB.Close()) on application shutdown
+	//
+	// Think of *gorm.DB as the "smart frontend" and *sql.DB as the "real engine".
 	sqlDB, err := conn.DB()
 	if err != nil {
 		return fmt.Errorf("unwrap *sql.DB: %w", err)
 	}
-	sqlDB.SetMaxOpenConns(maxOpen)                                 // cap concurrent open connections
-	sqlDB.SetMaxIdleConns(maxIdle)                                 // keep idle connections ready
-	sqlDB.SetConnMaxLifetime(time.Duration(lifeMin) * time.Minute) // recycle connections periodically
 
-	// 7) Proactive health check (fast-fail if DB is unreachable).
+	// Configure connection pool behavior.
+	// These settings control how many connections to the database server
+	// can be opened simultaneously, how many idle (ready) connections are kept,
+	// and how long a single connection is allowed to live before being recycled.
+	sqlDB.SetMaxOpenConns(maxOpen)                                 // Maximum number of total open connections (in use + idle)
+	sqlDB.SetMaxIdleConns(maxIdle)                                 // Maximum number of idle connections kept ready in the pool
+	sqlDB.SetConnMaxLifetime(time.Duration(lifeMin) * time.Minute) // Recycle connections periodically to avoid stale connections
+
+	// 7) Proactive health check (fast-fail if DB is unreachable)
+	//
+	// Before we consider the connection ready, we perform an explicit Ping using a context with timeout.
+	// This ensures that:
+	//
+	// - If DB credentials are wrong → fail immediately
+	// - If DB server is down → fail immediately
+	// - If network is unreachable → fail immediately
+	// - If connection handshake hangs → timeout in 3 seconds
+	//
+	// This prevents your application from starting successfully while the DB is actually unreachable.
+	// It is MUCH better to fail fast on startup than to crash later when the first query runs.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := pingContext(ctx, sqlDB); err != nil {
@@ -139,18 +179,43 @@ func initializeDB() error {
 	}
 
 	// 8) Publish the initialized connection to the package-level singleton.
+	//
+	// At this point, the GORM connection (conn = *gorm.DB) is fully tested and safe.
+	// We save it into the package-level variable `db` so that GetDB() can return it.
+	//
+	// NOTE:
+	// The application will primarily use `conn` for all ORM operations.
+	// The underlying *sql.DB (sqlDB) is mostly needed only here during initialization
+	// or when closing the database at shutdown (sqlDB.Close()).
 	db = conn
 	return nil
 }
 
-// pingContext pings the DB with context when supported; falls back to Ping().
+// pingContext attempts to ping the database using PingContext (with timeout support).
+// If the database driver does not support PingContext, it falls back to the regular Ping().
+//
+// In simple terms:
+// - Try the modern method (PingContext): supports cancellation and timeouts.
+// - If not available, use the classic Ping(): no timeout, but works for all drivers.
+//
+// Why this matters:
+// Some database drivers implement PingContext(), some only implement Ping().
+// This function safely handles both without breaking.
 func pingContext(ctx context.Context, s *sql.DB) error {
+
+	// Define a small interface that represents anything that has PingContext().
+	// If *sql.DB or the underlying driver supports it, we will detect it.
 	type pinger interface {
 		PingContext(context.Context) error
 	}
+
+	// Check if 's' (the *sql.DB) supports PingContext().
+	// If yes → use PingContext with timeout/cancellation support.
 	if p, ok := interface{}(s).(pinger); ok {
 		return p.PingContext(ctx)
 	}
+
+	// Otherwise → fallback to the basic Ping() (no context, no timeout).
 	return s.Ping()
 }
 
