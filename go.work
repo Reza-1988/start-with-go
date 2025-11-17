@@ -16,6 +16,7 @@ use (
 	./heterogeneousinputoutput
 	./namelessproblem
 	./onlinelibrary
+	./phonebook
 	./storemanager
 	./tested
 	./weatherapi
