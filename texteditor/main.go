@@ -1,10 +1,35 @@
 package main
 
+import "fmt"
+
 type Stack struct {
+	text []rune
 }
 
-func (s Stack) Top() (rune, error) {
-	return ' ', nil
+func NewStack() *Stack {
+	return &Stack{
+		text: make([]rune, 0),
+	}
+}
+
+func (s *Stack) Top() (rune, error) {
+	if len(s.text) == 0 {
+		return ' ', fmt.Errorf("stack is empty")
+	}
+	topText := s.text[len(s.text)-1]
+	return topText, nil
+}
+
+func (s *Stack) Push(r rune) {
+	s.text = append(s.text, r)
+}
+func (s *Stack) Pop() (rune, error) {
+	if len(s.text) == 0 {
+		return ' ', fmt.Errorf("stack is empty")
+	}
+	lastText := s.text[len(s.text)-1]
+	s.text = s.text[:len(s.text)-1]
+	return lastText, nil
 }
 
 type TwoStackEditor struct {
