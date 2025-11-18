@@ -19,5 +19,6 @@ use (
 	./phonebook
 	./storemanager
 	./tested
+	./texteditor
 	./weatherapi
 )
