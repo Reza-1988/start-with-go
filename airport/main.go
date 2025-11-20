@@ -16,6 +16,52 @@ type Flight struct {
 	FromTehran bool
 }
 
+func parseFlight(line string) Flight {
+
+	layout := "Mon, Jan 2, 2006 3:04 PM"
+	sepIdx := strings.Index(line, " => ")
+	left := strings.TrimSpace(line[:sepIdx])
+	right := strings.TrimSpace(line[sepIdx+4:])
+
+	// from Tehran
+	if strings.Contains(left, "Tehran(") {
+		parts := strings.SplitN(left, " ", 2)
+		plane := parts[0]
+		rest := parts[1]
+		openIdx := strings.Index(rest, "(")
+		closeIdx := strings.Index(rest, ")")
+		fromCity := strings.TrimSpace(rest[:openIdx])
+		timeStr := strings.TrimSpace(rest[openIdx+1 : closeIdx])
+		tehranTime, _ := time.Parse(layout, timeStr)
+		toCity := strings.TrimSpace(right)
+		return Flight{
+			Plane:      plane,
+			From:       fromCity,
+			To:         toCity,
+			TehranTime: tehranTime,
+			FromTehran: true,
+		}
+		// to Tehran
+	} else {
+
+		parts := strings.SplitN(left, " ", 2)
+		plane := parts[0]
+		fromCity := parts[1]
+		openIdx := strings.Index(right, "(")
+		closeIdx := strings.Index(right, ")")
+		toCity := strings.TrimSpace(right[:openIdx])
+		timeStr := strings.TrimSpace(right[openIdx+1 : closeIdx])
+		tehranTime, _ := time.Parse(layout, timeStr)
+		return Flight{
+			Plane:      plane,
+			From:       fromCity,
+			To:         toCity,
+			TehranTime: tehranTime,
+			FromTehran: false,
+		}
+
+	}
+}
 func main() {
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -43,9 +89,12 @@ func main() {
 	//
 	scanner.Scan()
 	f, _ := strconv.Atoi(scanner.Text())
+	flights := make([]Flight, 0, f)
 	for i := 0; i < f; i++ {
 		scanner.Scan()
-
+		line := scanner.Text()
+		flight := parseFlight(line)
+		flights = append(flights, flight)
 	}
 
 }
