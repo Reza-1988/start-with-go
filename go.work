@@ -1,6 +1,7 @@
 go 1.25.1
 
 use (
+	./airport
 	./banking
 	./basics
 	./calculaterapi
