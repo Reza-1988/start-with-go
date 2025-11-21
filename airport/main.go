@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -95,6 +97,59 @@ func main() {
 		line := scanner.Text()
 		flight := parseFlight(line)
 		flights = append(flights, flight)
+	}
+	scanner.Scan()
+	todo := scanner.Text()
+
+	if todo == "admin" {
+		type Interval struct {
+			Start time.Time
+			End   time.Time
+		}
+
+		intervals := make([]Interval, 0, len(flights))
+
+		for _, fl := range flights {
+			var start, end time.Time
+			if fl.FromTehran {
+				start = fl.TehranTime.Add(-5 * time.Minute)
+				end = fl.TehranTime.Add(5 * time.Minute)
+			} else {
+				start = fl.TehranTime.Add(-10 * time.Minute)
+				end = fl.TehranTime.Add(5 * time.Minute)
+			}
+			intervals = append(intervals, Interval{Start: start, End: end})
+		}
+		// with AI help
+		type Event struct {
+			Time  time.Time
+			Delta int
+		}
+
+		events := make([]Event, 0, len(intervals)*2)
+		for _, iv := range intervals {
+			events = append(events, Event{Time: iv.Start, Delta: +1})
+			events = append(events, Event{Time: iv.End, Delta: -1})
+		}
+
+		sort.Slice(events, func(i, j int) bool {
+			if events[i].Time.Equal(events[j].Time) {
+				return events[i].Delta < events[j].Delta
+			}
+			return events[i].Time.Before(events[j].Time)
+		})
+		//
+		current := 0
+		maxRunways := 0
+		for _, ev := range events {
+			current += ev.Delta
+			if current > maxRunways {
+				maxRunways = current
+			}
+		}
+
+		fmt.Println(maxRunways)
+		return
 	}
 
 }
