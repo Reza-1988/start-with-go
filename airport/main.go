@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -108,14 +109,18 @@ func main() {
 	todo := strings.TrimSpace(scanner.Text())
 	// with AI
 	if todo == "admin" {
-		type Interval struct {
-			Start time.Time
-			End   time.Time
+		type Event struct {
+			t     time.Time
+			delta int
 		}
 
-		intervals := make([]Interval, 0, len(flights))
+		events := make([]Event, 0, len(flights)*2)
 
 		for _, fl := range flights {
+			if fl.TehranTime.IsZero() {
+				continue
+			}
+
 			var start, end time.Time
 			if fl.FromTehran {
 				start = fl.TehranTime.Add(-5 * time.Minute)
@@ -124,19 +129,25 @@ func main() {
 				start = fl.TehranTime.Add(-10 * time.Minute)
 				end = fl.TehranTime.Add(5 * time.Minute)
 			}
-			intervals = append(intervals, Interval{Start: start, End: end})
+
+			events = append(events,
+				Event{t: start, delta: +1},
+				Event{t: end, delta: -1},
+			)
 		}
 
+		sort.Slice(events, func(i, j int) bool {
+			if events[i].t.Equal(events[j].t) {
+				return events[i].delta > events[j].delta
+			}
+			return events[i].t.Before(events[j].t)
+		})
+
+		current := 0
 		maxRunways := 0
 
-		for i := 0; i < len(intervals); i++ {
-			current := 0
-			for j := 0; j < len(intervals); j++ {
-				if intervals[i].Start.Before(intervals[j].End) &&
-					intervals[j].Start.Before(intervals[i].End) {
-					current++
-				}
-			}
+		for _, e := range events {
+			current += e.delta
 			if current > maxRunways {
 				maxRunways = current
 			}
