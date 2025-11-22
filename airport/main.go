@@ -22,12 +22,61 @@ type Flight struct {
 const timeLayout = "Mon, Jan 2, 2006 3:04 PM"
 
 var (
+	// Regex for flights departing FROM Tehran:
 	// Airbus-320 Tehran(Mon, Apr 7, 2025 7:36 PM) => Bandar-abbas
+	// Pattern: "<Plane> Tehran(<DateTime>) => <City>"
+	// Capturing groups:
+	//   m[1] = plane name  (e.g., "Airbus-320")
+	//   m[2] = datetime inside parentheses
+	//   m[3] = destination city
+	//
+	// Explanation:
+	// ^(\S+)               → plane name (non-space characters)
+	// \s+                 → one or more spaces
+	// Tehran\(            → literal "Tehran("
+	// (.+)                → full datetime (can contain spaces, commas, AM/PM)
+	// \)                  → closing parenthesis
+	// \s+=>\s+            → separator " => "
+	// (\S+)               → destination city name (non-space)
+	// \s*$                → optional trailing spaces, end of line
+
 	reFromTehran = regexp.MustCompile(`^(\S+)\s+Tehran\((.+)\)\s+=>\s+(\S+)\s*$`)
+	// Regex for flights arriving TO Tehran:
 	// Boeing-737 Tabriz => Tehran(Sun, Apr 6, 2025 3:24 PM)
+	// Pattern: "<Plane> <City> => Tehran(<DateTime>)"
+	// Capturing groups:
+	//   m[1] = plane name
+	//   m[2] = origin city
+	//   m[3] = datetime inside parentheses
+	//
+	// Explanation:
+	// ^(\S+)               → plane name
+	// \s+(\S+)            → origin city
+	// \s+=>\s+            → separator " => "
+	// Tehran\(            → literal "Tehran("
+	// (.+)                → datetime
+	// \)\s*$              → closing parenthesis + end of line
+
 	reToTehran = regexp.MustCompile(`^(\S+)\s+(\S+)\s+=>\s+Tehran\((.+)\)\s*$`)
 )
 
+// parseFlight parses one line of input and determines whether the flight
+// is:
+//  1. Departing from Tehran:   "<Plane> Tehran(<Time>) => <City>"
+//  2. Arriving to Tehran:      "<Plane> <City> => Tehran(<Time>)"
+//
+// It uses regex to extract:
+//   - plane name
+//   - city (origin or destination)
+//   - the exact timestamp string inside parentheses
+//
+// FindStringSubmatch returns:
+//
+//	m[0] = full matched string
+//	m[1], m[2], ... = captured groups inside parentheses
+//
+// Based on which regex matches, we construct a Flight object and mark
+// whether it is an outbound flight (FromTehran = true) or inbound.
 func parseFlight(line string) Flight {
 	line = strings.TrimSpace(line)
 
@@ -36,6 +85,9 @@ func parseFlight(line string) Flight {
 		timeStr := m[2]
 		toCity := m[3]
 
+		// Convert the extracted datetime string into time.Time.
+		// The layout must match EXACTLY the format used in input:
+		//   "Mon, Jan 2, 2006 3:04 PM"
 		tehranTime, _ := time.Parse(timeLayout, timeStr)
 
 		return Flight{
@@ -107,20 +159,34 @@ func main() {
 
 	scanner.Scan()
 	todo := strings.TrimSpace(scanner.Text())
-	// with AI
+
+	// Using sweep-line algorithm to calculate the minimum number of runways needed.
+	// Each flight occupies the runway during a specific time interval in Tehran.
+	// We convert every interval into two timeline events:
+	//   - start time  → +1  (runway becomes occupied)
+	//   - end time    → -1  (runway becomes free)
+	// After sorting the events by time, we scan through them and track
+	// the maximum number of simultaneously occupied runways.
+
 	if todo == "admin" {
+		// A timeline event representing a change in required runways.
 		type Event struct {
-			t     time.Time
-			delta int
+			t     time.Time // moment on the timeline
+			delta int       // +1 = runway needed, -1 = runway released
 		}
 
+		// Collect all events (two per flight).
 		events := make([]Event, 0, len(flights)*2)
 
 		for _, fl := range flights {
+			// Skip invalid or unparsable flights.
 			if fl.TehranTime.IsZero() {
 				continue
 			}
 
+			// Compute the exact interval during which the runway is occupied.
+			// Outbound flights (from Tehran):   [-5 min, +5 min]
+			// Inbound flights (to Tehran):     [-10 min, +5 min]
 			var start, end time.Time
 			if fl.FromTehran {
 				start = fl.TehranTime.Add(-5 * time.Minute)
@@ -130,19 +196,29 @@ func main() {
 				end = fl.TehranTime.Add(5 * time.Minute)
 			}
 
+			// Convert the interval into two events.
 			events = append(events,
-				Event{t: start, delta: +1},
-				Event{t: end, delta: -1},
+				Event{t: start, delta: +1}, // runway becomes occupied
+				Event{t: end, delta: -1},   // runway becomes free
 			)
 		}
 
+		// Sort all events on the timeline:
+		// 1) Primary key: time (earlier events first)
+		// 2) Tie-breaker: if two events happen at the same time,
+		//    process +1 (runway becomes occupied) BEFORE -1 (runway becomes free).
+		//    This ensures that if one flight starts using the runway at the exact
+		//    moment another one stops, they are both counted as overlapping.
 		sort.Slice(events, func(i, j int) bool {
 			if events[i].t.Equal(events[j].t) {
-				return events[i].delta > events[j].delta
+				return events[i].delta > events[j].delta // +1 before -1
 			}
 			return events[i].t.Before(events[j].t)
 		})
 
+		// Sweep over the sorted events and track how many runways are in use.
+		// 'current' is the number of occupied runways at the current moment.
+		// 'maxRunways' is the maximum value of 'current' over the whole timeline.
 		current := 0
 		maxRunways := 0
 

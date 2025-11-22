@@ -1,0 +1,22 @@
+3
+Fokker-100 700
+Boeing-737 740
+Airbus-320 730
+5
+Shiraz 900
+Mashhad 800
+Bandar-abbas 1240
+Yazd 630
+Tabriz 620
+10
+Airbus-320 Tehran(Mon, Apr 7, 2025 7:36 PM) => Bandar-abbas
+Fokker-100 Tehran(Sun, Apr 6, 2025 11:37 PM) => Shiraz
+Boeing-737 Tabriz => Tehran(Sun, Apr 6, 2025 3:24 PM)
+Fokker-100 Bandar-abbas => Tehran(Mon, Apr 7, 2025 12:59 PM)
+Fokker-100 Mashhad => Tehran(Sun, Apr 6, 2025 2:34 PM)
+Boeing-737 Bandar-abbas => Tehran(Tue, Apr 8, 2025 8:39 PM)
+Boeing-737 Yazd => Tehran(Sun, Apr 6, 2025 3:56 PM)
+Boeing-737 Mashhad => Tehran(Tue, Apr 8, 2025 2:39 AM)
+Airbus-320 Tehran(Mon, Apr 7, 2025 8:33 AM) => Yazd
+Airbus-320 Shiraz => Tehran(Sun, Apr 6, 2025 8:07 PM)
+Shiraz
