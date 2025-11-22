@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"sort"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -18,89 +18,95 @@ type Flight struct {
 	FromTehran bool
 }
 
+const timeLayout = "Mon, Jan 2, 2006 3:04 PM"
+
+var (
+	// Airbus-320 Tehran(Mon, Apr 7, 2025 7:36 PM) => Bandar-abbas
+	reFromTehran = regexp.MustCompile(`^(\S+)\s+Tehran\((.+)\)\s+=>\s+(\S+)\s*$`)
+	// Boeing-737 Tabriz => Tehran(Sun, Apr 6, 2025 3:24 PM)
+	reToTehran = regexp.MustCompile(`^(\S+)\s+(\S+)\s+=>\s+Tehran\((.+)\)\s*$`)
+)
+
 func parseFlight(line string) Flight {
+	line = strings.TrimSpace(line)
 
-	layout := "Mon, Jan 2, 2006 3:04 PM"
-	sepIdx := strings.Index(line, " => ")
-	left := strings.TrimSpace(line[:sepIdx])
-	right := strings.TrimSpace(line[sepIdx+4:])
+	if m := reFromTehran.FindStringSubmatch(line); m != nil {
+		plane := m[1]
+		timeStr := m[2]
+		toCity := m[3]
 
-	// from Tehran
-	if strings.Contains(left, "Tehran(") {
-		parts := strings.SplitN(left, " ", 2)
-		plane := parts[0]
-		rest := parts[1]
-		openIdx := strings.Index(rest, "(")
-		closeIdx := strings.Index(rest, ")")
-		fromCity := strings.TrimSpace(rest[:openIdx])
-		timeStr := strings.TrimSpace(rest[openIdx+1 : closeIdx])
-		tehranTime, _ := time.Parse(layout, timeStr)
-		toCity := strings.TrimSpace(right)
+		tehranTime, _ := time.Parse(timeLayout, timeStr)
+
 		return Flight{
 			Plane:      plane,
-			From:       fromCity,
+			From:       "Tehran",
 			To:         toCity,
 			TehranTime: tehranTime,
 			FromTehran: true,
 		}
-		// to Tehran
-	} else {
+	}
 
-		parts := strings.SplitN(left, " ", 2)
-		plane := parts[0]
-		fromCity := parts[1]
-		openIdx := strings.Index(right, "(")
-		closeIdx := strings.Index(right, ")")
-		toCity := strings.TrimSpace(right[:openIdx])
-		timeStr := strings.TrimSpace(right[openIdx+1 : closeIdx])
-		tehranTime, _ := time.Parse(layout, timeStr)
+	if m := reToTehran.FindStringSubmatch(line); m != nil {
+		plane := m[1]
+		fromCity := m[2]
+		timeStr := m[3]
+
+		tehranTime, _ := time.Parse(timeLayout, timeStr)
+
 		return Flight{
 			Plane:      plane,
 			From:       fromCity,
-			To:         toCity,
+			To:         "Tehran",
 			TehranTime: tehranTime,
 			FromTehran: false,
 		}
-
 	}
+	return Flight{}
 }
-func main() {
 
+func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Scan()
-	p, _ := strconv.Atoi(scanner.Text())
-	planeNameSpeed := make(map[string]int)
+	pLine := strings.TrimSpace(scanner.Text())
+	p, _ := strconv.Atoi(pLine)
 
+	planeNameSpeed := make(map[string]int, p)
 	for i := 0; i < p; i++ {
 		scanner.Scan()
-		parts := strings.Fields(scanner.Text())
+		line := strings.TrimSpace(scanner.Text())
+		parts := strings.Fields(line)
 		speed, _ := strconv.Atoi(parts[1])
 		planeNameSpeed[parts[0]] = speed
 	}
-	//
-	scanner.Scan()
-	c, _ := strconv.Atoi(scanner.Text())
-	cityNameDistance := make(map[string]int)
 
+	scanner.Scan()
+	cLine := strings.TrimSpace(scanner.Text())
+	c, _ := strconv.Atoi(cLine)
+
+	cityNameDistance := make(map[string]int, c)
 	for i := 0; i < c; i++ {
 		scanner.Scan()
-		parts := strings.Fields(scanner.Text())
+		line := strings.TrimSpace(scanner.Text())
+		parts := strings.Fields(line)
 		distance, _ := strconv.Atoi(parts[1])
 		cityNameDistance[parts[0]] = distance
 	}
-	//
+
 	scanner.Scan()
-	f, _ := strconv.Atoi(scanner.Text())
+	fLine := strings.TrimSpace(scanner.Text())
+	f, _ := strconv.Atoi(fLine)
+
 	flights := make([]Flight, 0, f)
 	for i := 0; i < f; i++ {
 		scanner.Scan()
 		line := scanner.Text()
-		flight := parseFlight(line)
-		flights = append(flights, flight)
+		fl := parseFlight(line)
+		flights = append(flights, fl)
 	}
-	scanner.Scan()
-	todo := scanner.Text()
 
+	scanner.Scan()
+	todo := strings.TrimSpace(scanner.Text())
+	// with AI
 	if todo == "admin" {
 		type Interval struct {
 			Start time.Time
@@ -120,29 +126,17 @@ func main() {
 			}
 			intervals = append(intervals, Interval{Start: start, End: end})
 		}
-		// with AI help
-		type Event struct {
-			Time  time.Time
-			Delta int
-		}
 
-		events := make([]Event, 0, len(intervals)*2)
-		for _, iv := range intervals {
-			events = append(events, Event{Time: iv.Start, Delta: +1})
-			events = append(events, Event{Time: iv.End, Delta: -1})
-		}
-
-		sort.Slice(events, func(i, j int) bool {
-			if events[i].Time.Equal(events[j].Time) {
-				return events[i].Delta < events[j].Delta
-			}
-			return events[i].Time.Before(events[j].Time)
-		})
-		//
-		current := 0
 		maxRunways := 0
-		for _, ev := range events {
-			current += ev.Delta
+
+		for i := 0; i < len(intervals); i++ {
+			current := 0
+			for j := 0; j < len(intervals); j++ {
+				if intervals[i].Start.Before(intervals[j].End) &&
+					intervals[j].Start.Before(intervals[i].End) {
+					current++
+				}
+			}
 			if current > maxRunways {
 				maxRunways = current
 			}
@@ -152,4 +146,32 @@ func main() {
 		return
 	}
 
+	city := todo
+
+	for _, fl := range flights {
+		if fl.From == "Tehran" && fl.To == city {
+			distance := cityNameDistance[city]
+			speed := planeNameSpeed[fl.Plane]
+
+			estimatedSec := 3600.0 * float64(distance) / float64(speed)
+			duration := time.Duration(estimatedSec) * time.Second
+
+			arrivalTime := fl.TehranTime.Add(duration)
+
+			fmt.Printf("%s Tehran => %s(%s)\n",
+				fl.Plane, city, arrivalTime.Format(timeLayout))
+
+		} else if fl.From == city && fl.To == "Tehran" {
+			distance := cityNameDistance[city]
+			speed := planeNameSpeed[fl.Plane]
+
+			estimatedSec := 3600.0 * float64(distance) / float64(speed)
+			duration := time.Duration(estimatedSec) * time.Second
+
+			departTime := fl.TehranTime.Add(-duration)
+
+			fmt.Printf("%s %s(%s) => Tehran\n",
+				fl.Plane, city, departTime.Format(timeLayout))
+		}
+	}
 }
