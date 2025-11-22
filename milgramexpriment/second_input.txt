@@ -1,0 +1,14 @@
+5 3
+ali 1, 2
+taghi 10, 11
+naghi 12, 10
+ghazal 25, 7
+neda 4, 16
+ali taghi
+taghi naghi ghazal ali
+naghi taghi
+ghazal taghi neda
+neda ghazal
+ali neda 10
+neda ali 1
+ghazal taghi 5
