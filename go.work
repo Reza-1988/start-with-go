@@ -22,5 +22,6 @@ use (
 	./storemanager
 	./tested
 	./texteditor
+	./tiktak
 	./weatherapi
 )
