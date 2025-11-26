@@ -1,6 +1,7 @@
 package library
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -26,7 +27,7 @@ func (library *Library) AddBook(name string) string {
 	if _, ok := library.books[rawName]; ok {
 		return "The book is already in the library"
 	}
-	if library.capacity <= len(library.books) {
+	if len(library.books) >= library.capacity {
 		return "Not enough capacity"
 	}
 	library.books[rawName] = &Book{
@@ -38,11 +39,29 @@ func (library *Library) AddBook(name string) string {
 }
 
 func (library *Library) BorrowBook(bookName, personName string) string {
-	// TODO
-	return ""
+	bookName = strings.TrimSpace(strings.ToLower(bookName))
+	b, ok := library.books[bookName]
+	if !ok {
+		return "The book is not defined in the library"
+	}
+	if b.borrowed {
+		return fmt.Sprintf("The book is already borrowed by %s", b.borrower)
+	}
+	b.borrowed = true
+	b.borrower = strings.TrimSpace(personName)
+	return "OK"
 }
 
 func (library *Library) ReturnBook(bookName string) string {
-	// TODO
-	return ""
+	bookName = strings.TrimSpace(strings.ToLower(bookName))
+	b, ok := library.books[bookName]
+	if !ok {
+		return "The book is not defined in the library"
+	}
+	if !b.borrowed {
+		return "The book has not been borrowed"
+	}
+	b.borrowed = false
+	b.borrower = ""
+	return "OK"
 }
