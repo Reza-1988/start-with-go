@@ -5,14 +5,14 @@ import (
 	"testing"
 )
 
-const(
-	buyMsg = "i will buy it"
-	failedBuyMsg = "sold"
+const (
+	buyMsg             = "i will buy it"
+	failedBuyMsg       = "sold"
 	successfullyBuyMsg = "worth it :))"
-	whichOneMsg = "which one?"
+	whichOneMsg        = "which one?"
 
 	//info
-	infoMsg = "what do dou have?"
+	infoMsg    = "what do dou have?"
 	nothingMsg = "i have nothing"
 
 	//sell
@@ -80,7 +80,6 @@ func TestSimple(t *testing.T) {
 		t.Errorf("your answer must be: %s but found: %s", successfullyBuyMsg, buyRes)
 	}
 
-	
 	if buyRes := client_1.buy(); buyRes != failedBuyMsg {
 		t.Errorf("your answer must be: %s but found: %s", failedBuyMsg, buyRes)
 	}
