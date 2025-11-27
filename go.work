@@ -16,6 +16,7 @@ use (
 	./golangimplemention
 	./gormintroduction
 	./heterogeneousinputoutput
+	./junkshopqueue
 	./librarytrouble
 	./milgramexpriment
 	./namelessproblem
