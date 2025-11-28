@@ -55,6 +55,7 @@ func handleMessage(msg string, state *ClientState, paintings *[]string, firstUns
 //
 //   - chan string  → a channel used to talk to one client.
 //   - chan chan string → a channel through which new clients send their own channels.
+//
 // So:
 // Each time a new client enters the shop, they send their personal channel into Sch.
 // ManageShop receives that channel and starts a goroutine to talk to that client.

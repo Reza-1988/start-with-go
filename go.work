@@ -17,6 +17,7 @@ use (
 	./gormintroduction
 	./heterogeneousinputoutput
 	./junkshopqueue
+	./languagetranslator
 	./librarytrouble
 	./milgramexpriment
 	./namelessproblem
