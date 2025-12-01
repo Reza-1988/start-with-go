@@ -32,32 +32,65 @@ func FindTreasure(ch chan interface{}) {
 	for Lx < Rx {
 		mid := (Lx + Rx) / 2
 		// First we go to (mid, yFixed) to make this point "previous".
+		// Make sure the judge compares (mid+1) with (mid).
+		// The judge always compares the new query with the *previous* query.
+		// So if we are not already at (mid, yFixed), we must move there first
+		// to make it the "previous" point before checking (mid+1, yFixed).
 		if curX != mid || curY != yFixed {
 			_ = ask(mid, yFixed) // // We don't use the answer for comparison
 			curX, curY = mid, yFixed
 		}
-		// Now we move to (mid+1, yFixed)
-		// The answer to this move tells us what f(mid+1) is relative to f(mid).
+		// We are inside the loop with a current search interval [Lx, Rx] on the x-axis.
+		// We have already chosen:
+		//     mid := (Lx + Rx) / 2
+		// and (mid, yFixed) is now the "previous" point (we just asked it before).
+
+		// Now we move to (mid+1, yFixed).
+		// The judge will compare the distance of (mid+1, yFixed) to the distance of (mid, yFixed).
+		// So the answer tells us whether f(mid+1) < f(mid), f(mid+1) > f(mid), or they are equal.
+		// In other words: it tells us which side of the V-shaped distance function we are on.
 		ans := ask(mid+1, yFixed)
 		curX, curY = mid+1, yFixed
-		// means the new point is closer, minimum on the right [mid+1..Rx]
+
+		// Case 1: "$s$s$"  → the new point (mid+1) is CLOSER than (mid).
+		// That means: distance(mid+1) < distance(mid).
+		// In a V-shaped function, this can only happen if the minimum (treasure x)
+		// is on the RIGHT side of mid (or at mid+1, mid+2, ...).
+		// So we can safely discard the LEFT part [Lx..mid], because the treasure
+		// cannot be there anymore. The new search interval becomes [mid+1..Rx].
 		if ans == "$s$s$" {
 			Lx = mid + 1
-			// means the new point is further away, minimum in [Lx..mid]
+
+			// Case 2: "s.s.s" → the new point (mid+1) is FURTHER than (mid).
+			// That means: distance(mid+1) > distance(mid).
+			// This means we are going away from the minimum when we move to the right,
+			// so the minimum must be on the LEFT side (or exactly at mid).
+			// Therefore, we can discard the RIGHT part (mid+1..Rx),
+			// and our new search interval becomes [Lx..mid].
 		} else if ans == "s.s.s" {
 			Rx = mid
-			// "same as before" is not really seen in the logic of Manhattan distance for two adjacent points,
-			// but just in case, a simple interval compaction:
+
+			// Case 3: "same as before" → distance(mid+1) == distance(mid).
+			// For two adjacent points in a Manhattan-distance V-shape, this is unusual,
+			// but we handle it just in case.
+			// Here we simply "shrink" the interval from the longer side to keep progress:
+			// - If the left side [Lx..mid] is longer, move Lx closer to mid.
+			// - Otherwise, move Rx closer to mid+1.
+			// This keeps reducing [Lx..Rx] until we eventually find a single point.
 		} else {
 			if mid+1-Lx > Rx-mid {
+				// Left side is longer → move Lx towards mid
 				Lx = mid
 			} else {
+				// Right side is longer → move Rx towards mid+1
 				Rx = mid + 1
 			}
 		}
-	}
-
-	gx := Lx // This is the treasure x
+	// When the loop ends we have Lx == Rx, meaning the search interval
+	// has narrowed down to a single x value. This unique point is the
+	// minimum of the V-shaped distance function, so Lx is exactly the
+	// treasure's x-coordinate.
+	gx := Lx
 
 	// --- Step 2: Find y treasure (gy) with x fixed = gx
 	Ly, Ry := 1, m
