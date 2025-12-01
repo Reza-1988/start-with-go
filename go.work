@@ -14,7 +14,7 @@ use (
 	./gameserver
 	./gohttpclient
 	./golangimplemention
-	./goldentracker
+	./treasuretracker
 	./gormintroduction
 	./heterogeneousinputoutput
 	./junkshopqueue
