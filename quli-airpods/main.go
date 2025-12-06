@@ -2,6 +2,13 @@ package main
 
 import "sync"
 
+// We define the possible states as constants.
+const (
+	StateDocked       = "Docked"
+	StateConnected    = "Connected"
+	StateDisconnected = "Disconnected"
+)
+
 // Airpod
 // Think of one AirPod (only left or only right)
 //  1. It has state:
@@ -29,7 +36,6 @@ type Airpod struct {
 // 	4. Also needs a lock(`sync.Mutex`) because:
 //     - Many goroutines may call `DockLeft`, `UndockRight`, `ConnectBluetooth`, etc. at the same time.
 //     -  We must protect: `btConnected`, `phoneCh`, some operations that involve both Airpods together.
-
 type AirpodCase struct {
 	mu          sync.Mutex
 	left        *Airpod
@@ -55,8 +61,34 @@ type AirpodCase struct {
 // 			- All case-level operations (ConnectBluetooth, DockLeft, UndockRight, etc.) can safely change shared fields.
 // --- End
 
+// NewAirpodCase
+// Some usefully notes for start new AirpodCase struck:
+//	1. You don't need to initialize Mutex in struct e.g. `mu: sync.Mutex()` because:
+//  	- In Go, the zero value of a `sync.Mutex` is already a valid mutex.
+// 		- So you don’t need to set it manually.
+// 	2. For Initialize the `ch` for each Airpod: `ch: make(chan byte)`:
+// 		- Unbuffered channels are OK, but in this problem they can easily cause blocking and weird deadlocks,
+//		- especially with multiple goroutines and two AirPods.
+// 		- Safer to use a buffered channel,This gives some room for audio bytes without blocking immediately.
+// 	3. `phoneCh` should not be created here because:
+// 		- The problem statement says: `ConnectBluetooth(ch chan byte)` receives a channel from the phone. So:
+// 			- The phone creates the channel. The case stores that channel.
+// 			- Therefore:
+// 				- In `NewAirpodCase`, phoneCh should be nil.
+// 				- In `ConnectBluetooth`, we will set c.phoneCh = ch.
 func NewAirpodCase() *AirpodCase {
-	return nil
+	return &AirpodCase{
+		left: &Airpod{
+			state: "Docked",
+			ch:    make(chan byte, 1024),
+		},
+		right: &Airpod{
+			state: StateDocked,
+			ch:    make(chan byte, 1024),
+		},
+		btConnected: false,
+		phoneCh:     nil,
+	}
 }
 
 func (a *AirpodCase) GetRightAirpod() *Airpod {
