@@ -1,6 +1,9 @@
 package main
 
-import "sync"
+import (
+	"fmt"
+	"sync"
+)
 
 // We define the possible states as constants.
 const (
@@ -29,11 +32,11 @@ type Airpod struct {
 
 // AirpodCase
 // The AirpodCase is the case that holds both Airpods and talks to the phone.
-// 	1. It must store two Airpods (left + right)
-// 	2. It must remember Bluetooth's is connected or not.
-// 	3. It must keep the channel from the phone
+//  1. It must store two Airpods (left + right)
+//  2. It must remember Bluetooth's is connected or not.
+//  3. It must keep the channel from the phone
 //     - The phone sends bytes on this channel and the case reads these bytes and forwards them to connected Airpods.
-// 	4. Also needs a lock(`sync.Mutex`) because:
+//  4. Also needs a lock(`sync.Mutex`) because:
 //     - Many goroutines may call `DockLeft`, `UndockRight`, `ConnectBluetooth`, etc. at the same time.
 //     -  We must protect: `btConnected`, `phoneCh`, some operations that involve both Airpods together.
 type AirpodCase struct {
@@ -63,23 +66,25 @@ type AirpodCase struct {
 
 // NewAirpodCase
 // Some usefully notes for start new AirpodCase struck:
-//	1. You don't need to initialize Mutex in struct e.g. `mu: sync.Mutex()` because:
-//  	- In Go, the zero value of a `sync.Mutex` is already a valid mutex.
-// 		- So you don’t need to set it manually.
-// 	2. For Initialize the `ch` for each Airpod: `ch: make(chan byte)`:
-// 		- Unbuffered channels are OK, but in this problem they can easily cause blocking and weird deadlocks,
-//		- especially with multiple goroutines and two AirPods.
-// 		- Safer to use a buffered channel,This gives some room for audio bytes without blocking immediately.
-// 	3. `phoneCh` should not be created here because:
-// 		- The problem statement says: `ConnectBluetooth(ch chan byte)` receives a channel from the phone. So:
-// 			- The phone creates the channel. The case stores that channel.
-// 			- Therefore:
-// 				- In `NewAirpodCase`, phoneCh should be nil.
-// 				- In `ConnectBluetooth`, we will set c.phoneCh = ch.
+//  1. You don't need to initialize Mutex in struct e.g. `mu: sync.Mutex()` because:
+//     - In Go, the zero value of a `sync.Mutex` is already a valid mutex.
+//     - So you don’t need to set it manually.
+//  2. For Initialize the `ch` for each Airpod: `ch: make(chan byte)`:
+//     - Unbuffered channels are OK, but in this problem they can easily cause blocking and weird deadlocks,
+//     - especially with multiple goroutines and two AirPods.
+//     - Safer to use a buffered channel,This gives some room for audio bytes without blocking immediately.
+//  3. `phoneCh` should not be created here because:
+//     - The problem statement says: `ConnectBluetooth(ch chan byte)` receives a channel from the phone. So:
+//     - The phone creates the channel. The case stores that channel.
+//     - Therefore:
+//     - In `NewAirpodCase`, phoneCh should be nil.
+//     - In `ConnectBluetooth`, we will set c.phoneCh = ch.
 func NewAirpodCase() *AirpodCase {
 	return &AirpodCase{
+		// mu: zero value is fine, no need to set
 		left: &Airpod{
-			state: "Docked",
+			// mu: zero value is fine
+			state: StateDocked,
 			ch:    make(chan byte, 1024),
 		},
 		right: &Airpod{
@@ -87,35 +92,92 @@ func NewAirpodCase() *AirpodCase {
 			ch:    make(chan byte, 1024),
 		},
 		btConnected: false,
-		phoneCh:     nil,
+		phoneCh:     nil, // will be set in ConnectBluetooth
 	}
 }
 
-func (a *AirpodCase) GetRightAirpod() *Airpod {
-	return nil
+func (c *AirpodCase) GetRightAirpod() *Airpod {
+	return c.right
 }
 
-func (a *AirpodCase) GetLeftAirpod() *Airpod {
-	return nil
-
+func (c *AirpodCase) GetLeftAirpod() *Airpod {
+	return c.left
 }
+
+// GetState
+// Why do we use a lock in GetState()?
+//   - Because many goroutines may read the state at the same time while another goroutine is changing it.
+//   - Examples of functions that change the state: `UndockLeft`, `UndockRight`, `DockLeft`, `DockRight`, `ConnectBluetooth`
+//   - So at any moment, One goroutine might set `status = "Connected"`, Another goroutine might call `GetState() to read the state.
+//   - Without Lock race condition is happened.
+//
+// Why use to `RLock()`/`RULock()`:
+//   - This is a read lock, It allows multiple readers at the same time, it blocks writers and safe for raad-only operations.
+//   - `Lock()` / `Unlock()`:
+//   - Use for operations that change data, Only one goroutine can hold the lock, This prevents conflict when writing
 func (a *Airpod) GetState() string {
-	return ""
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.state
 }
 
-func (a *AirpodCase) UndockLeft() *Airpod {
+// UndockLeft
+// 1. For lock must use Airpod lock because we want to lock Airpod states, and it's belong to Airpod not AirpodCase.
+//   - `c.mu` is meant to protect case-level fields like: `btConnected`, `phoneCh`
+//   - The state of each Airpod should be protected bu its own `mu`.
+//
+// 2. From beginning, we must use lock for read or write
+//   - if  read `c.left.state` before you lock anything. This is not safe if another goroutine can change it at the same time.
+func (c *AirpodCase) UndockLeft() *Airpod {
+	c.left.mu.Lock()
+	defer c.left.mu.Unlock()
+	//
+	if c.left.state == StateDocked {
+		return nil
+	}
+	// Now we know it was Docked, so we undock it.
+	if c.btConnected {
+		c.left.state = StateConnected
+	} else {
+		c.left.state = StateDisconnected
+	}
+	return c.left
+}
+
+func (c *AirpodCase) UndockRight() *Airpod {
+	c.right.mu.Lock()
+	defer c.right.mu.Unlock()
+	//
+	if c.right.state == StateDocked {
+		return nil
+	}
+	//
+	if c.btConnected {
+		c.right.state = StateConnected
+	} else {
+		c.right.state = StateDisconnected
+	}
+	return c.right
+}
+
+func (c *AirpodCase) DockLeft() error {
+	c.left.mu.Lock()
+	defer c.left.mu.Unlock()
+	//
+	if c.left.state == StateDocked {
+		return fmt.Errorf("left Airpod already is in case")
+	}
+	c.left.state = StateDocked
 	return nil
 }
-
-func (a *AirpodCase) UndockRight() *Airpod {
-	return nil
-}
-
-func (a *AirpodCase) DockLeft() error {
-	return nil
-
-}
-func (a *AirpodCase) DockRight() error {
+func (c *AirpodCase) DockRight() error {
+	c.right.mu.Lock()
+	defer c.right.mu.Unlock()
+	//
+	if c.right.state == StateDocked {
+		return fmt.Errorf("left Airpod already is in case")
+	}
+	c.right.state = StateDocked
 	return nil
 }
 
