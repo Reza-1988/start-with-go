@@ -14,7 +14,6 @@ use (
 	./gameserver
 	./gohttpclient
 	./golangimplemention
-	./treasuretracker
 	./gormintroduction
 	./heterogeneousinputoutput
 	./junkshopqueue
@@ -28,5 +27,6 @@ use (
 	./tested
 	./texteditor
 	./tiktak
+	./treasuretracker
 	./weatherapi
 )

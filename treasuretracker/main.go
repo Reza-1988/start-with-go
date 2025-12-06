@@ -86,6 +86,7 @@ func FindTreasure(ch chan interface{}) {
 				Rx = mid + 1
 			}
 		}
+	}
 	// When the loop ends we have Lx == Rx, meaning the search interval
 	// has narrowed down to a single x value. This unique point is the
 	// minimum of the V-shaped distance function, so Lx is exactly the
@@ -97,11 +98,11 @@ func FindTreasure(ch chan interface{}) {
 	xFixed := gx
 
 	for Ly < Ry {
-		mid := (Lx + Ry) / 2
+		mid := (Ly + Ry) / 2
 
 		if curX != xFixed || curY != mid {
 			_ = ask(xFixed, mid)
-			curX, curY = xFixed, mid+1
+			curX, curY = xFixed, mid
 		}
 
 		ans := ask(xFixed, mid+1)
@@ -119,7 +120,7 @@ func FindTreasure(ch chan interface{}) {
 		}
 	}
 	gy := Ly
-	// --- Step 3: Declare the final answer ----------
+	// --- Step 3: Declare the final answer
 
 	// Now that we are sure that (gx, gy) is the minimum distance point (i.e. the treasure),
 	// We send this point to the judge once again.
@@ -128,5 +129,4 @@ func FindTreasure(ch chan interface{}) {
 
 	// After this, judge will no longer send anything on ch and our goroutine will block,
 	// but it doesn't matter for the test because judge will send the result on the res channel and the test will be finished.
-
 }
