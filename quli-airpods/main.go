@@ -132,7 +132,7 @@ func (c *AirpodCase) UndockLeft() *Airpod {
 	c.left.mu.Lock()
 	defer c.left.mu.Unlock()
 	//
-	if c.left.state == StateDocked {
+	if c.left.state != StateDocked {
 		return nil
 	}
 	// Now we know it was Docked, so we undock it.
@@ -148,7 +148,7 @@ func (c *AirpodCase) UndockRight() *Airpod {
 	c.right.mu.Lock()
 	defer c.right.mu.Unlock()
 	//
-	if c.right.state == StateDocked {
+	if c.right.state != StateDocked {
 		return nil
 	}
 	//
@@ -182,9 +182,72 @@ func (c *AirpodCase) DockRight() error {
 }
 
 func (a *Airpod) GetChannel() chan byte {
-	return nil
+	return a.ch
 }
 
+// ConnectBluetooth
+// What does ConnecBluetooth need to do?
+//  1. Prevent connecting twice
+//     - If Bluetooth is already connected, return an error.
+//     - But we must check and change `btConnected` under `c.mu` lock to avoid race conditions.
+//  2. Save the phone channel
+//     - We get a channel from the phone : `ch chan byte`, This is the channel where audio comes in.
+//     - We must store it inside AirpodCase channel: `c.phoneCh = ch`
+//  3. Change Airpods state (Disconnected to Connecte)
+//     - When Bluetooth connects, Airpods that are Disconnected become connected, so:
+//     - If left Airpod state is `StateDisconnected`, set to `StateConnected`
+//     - Same Rule for right Airpod
+//     - We must lock each Airpod `c.left.mu.Lock()`/`c.right.mu.Lock` while changing its state.
+//  4. Start a goroutine to route audio
+//     - A goroutine waits for bytes from `ch` (the phone). Every time it gets one byte:
+//     - It check which Airpods are `Connected`
+//			- Use RLock() when you get states of each Airpod.
+//     - It sends that byte to their channels if the states of each Airpod is StateConnected.
 func (c *AirpodCase) ConnectBluetooth(ch chan byte) error {
+	c.mu.Lock()
+
+	// 1. If already connected, return error
+	if c.btConnected {
+		c.mu.Unlock()
+		return fmt.Errorf("bluetooth already connected")
+	}
+
+	// Mark as connected
+	c.btConnected = true
+	c.phoneCh = ch
+	c.mu.Unlock()
+	// 2. Update airpods that were disconnected
+	// LEFT
+	c.left.mu.Lock()
+	if c.left.state == StateDisconnected {
+		c.left.state = StateConnected
+	}
+	c.left.mu.Unlock()
+	// Right
+	c.right.mu.Lock()
+	if c.right.state == StateDisconnected {
+		c.right.state = StateConnected
+	}
+	c.right.mu.Unlock()
+	// 3. Start audio forwarding goroutine
+	go func() {
+		for b := range ch {
+			// Check left side state
+			c.left.mu.RLock()
+			leftConnected := c.left.state == StateConnected
+			c.left.mu.RUnlock()
+			// Check right state
+			c.right.mu.RLock()
+			rightConnected := c.right.state == StateConnected
+			c.right.mu.RUnlock()
+			// Send audio
+			if leftConnected {
+				c.left.ch <- b
+			}
+			if rightConnected {
+				c.right.ch <- b
+			}
+		}
+	}()
 	return nil
 }
