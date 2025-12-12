@@ -1,32 +1,33 @@
-go 1.25.1
+go 1.25.5
 
 use (
-	./airplanehangar
+	./airplane-hangar
 	./airport
 	./banking
 	./basics
-	./calculaterapi
-	./controlmachine
-	./coolfuncs
-	./cryptocurrencychecker
+	./calculater-api
+	./control-machine
+	./cool-funcs
+	./cryptocurrency-checker
 	./decoder
-	./digitalclock
-	./gameserver
-	./gohttpclient
-	./golangimplemention
-	./gormintroduction
-	./heterogeneousinputoutput
-	./junkshopqueue
-	./languagetranslator
-	./librarytrouble
-	./milgramexpriment
-	./namelessproblem
-	./onlinelibrary
-	./phonebook
-	./storemanager
+	./digital-clock
+	./game-server
+	./go-http
+	./golang-implementation
+	./gorm-introduction
+	./heterogeneous-input-output
+	./junk-shop-queue
+	./language-translator
+	./library-trouble
+	./milgram-experiment
+	./nameless-problem
+	./online-library
+	./phone-book
+	./quli-airpods
+	./store-manager
 	./tested
-	./texteditor
+	./text-editor
 	./tiktak
-	./treasuretracker
-	./weatherapi
+	./treasure-tracker
+	./weather-api
 )
