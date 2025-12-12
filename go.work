@@ -24,6 +24,7 @@ use (
 	./online-library
 	./phone-book
 	./quli-airpods
+	./smart-thermostat
 	./store-manager
 	./tested
 	./text-editor
