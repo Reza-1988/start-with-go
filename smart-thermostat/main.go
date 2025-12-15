@@ -67,9 +67,55 @@ func (s *SystemController) AddRoom(room *Room) error {
 }
 
 func (s *SystemController) UpdateRoomTemperature(roomID string, newTemp int) error {
+	if newTemp < 0 {
+		return fmt.Errorf("invalid target temperature")
+	}
+	s.mu.RLock()
+	room, ok := s.Rooms[roomID]
+	s.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("room does not exist")
+	}
+
+	// Update current temperature and snapshot state
+	room.mu.Lock()
+	room.Thermostat.CurrentTemperature = newTemp
+	target := room.Thermostat.TargetTemperature
+	occupied := room.Occupied
+	running := room.FanRunning
+	room.mu.Unlock()
+
+	// apply fan rules
+	if !occupied || newTemp == target {
+		if running {
+			_ = room.StartFan() //
+		}
+		return nil
+	}
+	// in this clause the room is occupied and `newTemp != target` (so temperature needs to change and fan should be ON)
+	// if `running == true`, fan is already ON and do nothing
+	// if `running != true`, fan is OFF, and we need to start
+	// Why we ignore "fan already running" error?
+	//	- Because concurrency. Imagine two goroutines at the same time both decide the fan should start:
+	// 		- Goroutine A checks running == false
+	//		- Goroutine B checks running == false
+	// 		- Both call StartFan()
+	// 		- A starts it successfully
+	// 		- B now sees it’s already running and StartFan() returns error "fan already running"
+	// 		- That error is not a “real failure” — the fan is already ON, which is exactly what we want. So we ignore it.
+	if !running {
+		// should succeed; if it returns "fan already running" due to race, you can ignore it
+		if err := room.StartFan(); err != nil && err.Error() != "fan already running" {
+			return err
+		}
+		// Meaning:
+		//	- If StartFan returns nil, good
+		// 	- If StartFan returns "fan already running" → still good (goal achieved)
+		// 	- If StartFan returns any other error (like "room is not occupied" or "no adjustment needed")
+		//	- return it because that’s unexpected here
+	}
 	return nil
 }
-
 func (s *SystemController) GenerateReports() map[string]string {
 	return map[string]string{}
 }
