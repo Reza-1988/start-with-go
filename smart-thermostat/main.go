@@ -2,6 +2,7 @@ package smart_thermostat
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -18,7 +19,7 @@ type Room struct {
 	Thermostat Thermostat
 	Occupied   bool
 	FanRunning bool
-	mu         sync.Mutex
+	mu         sync.RWMutex
 	cancel     context.CancelFunc // non-nil only while fan goroutine is active
 }
 
@@ -48,8 +49,20 @@ func NewSystemController() *SystemController {
 	}
 }
 
+// AddRoom adds a new room to the system.
+// This operation may be performed concurrently.
 func (s *SystemController) AddRoom(room *Room) error {
+	if room == nil || room.ID == "" {
+		return fmt.Errorf("room ID is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
+	if _, ok := s.Rooms[room.ID]; ok {
+		return fmt.Errorf("room already exists")
+	}
+
+	s.Rooms[room.ID] = room
 	return nil
 }
 
@@ -61,20 +74,32 @@ func (s *SystemController) GenerateReports() map[string]string {
 	return map[string]string{}
 }
 
+// GetCurrentTemperature returns the room current temperature
 func (r *Room) GetCurrentTemperature() int {
-	return 0
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.Thermostat.CurrentTemperature
 }
 
+// GetTargetTemperature returns the room target temperature
 func (r *Room) GetTargetTemperature() int {
-	return 0
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.Thermostat.TargetTemperature
 }
 
+// GetIsRoomOccupied returns the occupancy status of the room
 func (r *Room) GetIsRoomOccupied() bool {
-	return false
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.Occupied
 }
 
+// GetIsFanRunning indicates whether the room fan is ON or OFF
 func (r *Room) GetIsFanRunning() bool {
-	return false
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.FanRunning
 }
 
 func (r *Room) SetOccupancy(occupied bool) {
