@@ -66,6 +66,11 @@ func (s *SystemController) AddRoom(room *Room) error {
 	return nil
 }
 
+// UpdateRoomTemperature regulates the occupancy of the room.
+// If there are people in the room, it will turn on to reach the target temperature,
+// and if the room is empty, it will turn off.
+// Of course, the thermostat also has an effect on turning the fan on or off.
+// But generally, if the room is empty, the fan will not turn on.
 func (s *SystemController) UpdateRoomTemperature(roomID string, newTemp int) error {
 	if newTemp < 0 {
 		return fmt.Errorf("invalid target temperature")
@@ -116,9 +121,68 @@ func (s *SystemController) UpdateRoomTemperature(roomID string, newTemp int) err
 	}
 	return nil
 }
+
+// GenerateReports generates reports on the temperature status and fan operation mode in the system.
+// These reports include the room ID and the thermostat operation mode of each room.
+// The fan operation mode is calculated as follows:
+//   - "cooling" if the fan is cooling the room,
+//   - "heating" if it is heating the room,
+//   - "off" if fan is off.
 func (s *SystemController) GenerateReports() map[string]string {
-	return map[string]string{}
+	// 1. snapshot room pointers safely (don’t hold lock too long)
+	s.mu.RLock()
+	rooms := make([]*Room, 0, len(s.Rooms))
+	for _, r := range s.Rooms {
+		rooms = append(rooms, r)
+	}
+	s.mu.RUnlock()
+	// 2.compute reports without holding controller lock
+	newReports := make(map[string]string, len(rooms))
+	for _, r := range rooms {
+		r.mu.RLock()
+		id := r.ID
+		current := r.Thermostat.CurrentTemperature
+		target := r.Thermostat.TargetTemperature
+		running := r.FanRunning
+		r.mu.RUnlock()
+		//
+		state := "off"
+		if running {
+			if current < target {
+				state = "heating"
+			} else if current > target {
+				state = "cooling"
+			} else {
+				state = "off"
+			}
+		}
+		newReports[id] = state
+		// 3.Store it automatically
+		s.mu.Lock()
+		if s.Reports == nil {
+			s.Reports = make(map[string]string)
+		}
+		s.Reports = newReports
+		s.mu.Unlock()
+
+	}
+	return newReports
 }
+
+// Why we take a snapshot of rooms in GenerateReports()?
+// 	- Because `s.Rooms` is a map, and other goroutines may call `AddRoom()` at the same time.
+// 	- If we loop directly over `s.Rooms` while another goroutine writes to it, Go can crash with:
+// 		- fatal error: concurrent map iteration and map write
+// 	- So we do this:
+// 		- Lock controller (RLock)
+// 		- Copy all `*Room` pointers into a slice (`rooms := []*Room{...}`)
+// 		- Unlock controller
+// 		- Loop over the slice safely (because the slice won’t change)
+// 		- That’s the snapshot.
+//	- Extra benefit:
+//		- We also avoid holding the controller lock for a long time while we:
+// 		- lock each room, compute strings, build report map
+// 		- So other operations (like AddRoom / UpdateRoomTemperature) don’t get blocked too much.
 
 // GetCurrentTemperature returns the room current temperature
 func (r *Room) GetCurrentTemperature() int {
