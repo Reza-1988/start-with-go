@@ -212,8 +212,38 @@ func (r *Room) GetIsFanRunning() bool {
 	return r.FanRunning
 }
 
+// SetOccupancy adjusts the occupancy status of the room.
+//   - If there are people in the room, the fan will turn on to bring the temperature to the target temperature,
+//   - if the room is empty, the fan will stop.
+//   - Of course, the thermostat temperature also affects whether the fan turns on or off.
+//   - But in general, the fan will not turn on if the room is empty.
 func (r *Room) SetOccupancy(occupied bool) {
+	r.mu.Lock()
+	r.Occupied = occupied
+	current := r.Thermostat.CurrentTemperature
+	target := r.Thermostat.TargetTemperature
+	running := r.FanRunning
+	r.mu.RUnlock()
 
+	// if room is now empty then fan must be off
+	if !occupied {
+		if running {
+			_ = r.StartFan()
+		}
+		return
+	}
+	// if room is occupied:
+	// 	- if not adjustment needed then fan should be off.
+	if current == target {
+		if running {
+			_ = r.StopFan()
+		}
+		return
+	}
+	// Room is occupied and needs adjustment, fan should be on
+	if !running {
+		_ = r.StartFan() // if it returns "fan already running" due to race, it's fine
+	}
 }
 
 func (r *Room) StartFan() error {
