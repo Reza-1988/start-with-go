@@ -1,4 +1,4 @@
-package smart_thermostat
+package main
 
 import (
 	"testing"

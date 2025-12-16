@@ -1,16 +1,15 @@
-package smart_thermostat
+package main
 
 import (
-	"context"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // SystemController manages rooms centrally
 type SystemController struct {
-	Rooms   map[string]*Room
-	Reports map[string]string // populated by GenerateReports()
-	mu      sync.RWMutex
+	Rooms map[string]*Room
+	mu    sync.RWMutex
 }
 
 // Room represents a room and its thermostat + fan state
@@ -19,21 +18,8 @@ type Room struct {
 	Thermostat Thermostat
 	Occupied   bool
 	FanRunning bool
-	mu         sync.RWMutex
-	cancel     context.CancelFunc // non-nil only while fan goroutine is active
+	mu         sync.Mutex
 }
-
-// Why we add `cancel` field?
-// Because the fan runs in a goroutine (background loop ticking every second.)
-// We need a safe way to stop the goroutine when:
-//	1. room becomes empty
-//	2. temperature reaches the target
-//	3. controller updates the temp to equal target
-// 	4. or `StopFan()` is called.
-// `cancel` (from `context.WithCancel`) is like a remote OFF button for the goroutine:
-//	- the goroutine checks `ctx.Done()` and exits
-// 	- calling `cancel()` is safe even if called multiple times
-// 	- it avoids bugs like closing a channel twice (which can crash your program)
 
 // Thermostat hold temperature state
 type Thermostat struct {
@@ -44,13 +30,11 @@ type Thermostat struct {
 // NewSystemController creates an instance of SystemController
 func NewSystemController() *SystemController {
 	return &SystemController{
-		Rooms:   make(map[string]*Room),
-		Reports: make(map[string]string),
+		Rooms: make(map[string]*Room),
 	}
 }
 
-// AddRoom adds a new room to the system.
-// This operation may be performed concurrently.
+// AddRoom adds a new room to the system. This operation may be performed concurrently.
 func (s *SystemController) AddRoom(room *Room) error {
 	if room == nil || room.ID == "" {
 		return fmt.Errorf("room ID is required")
@@ -72,9 +56,12 @@ func (s *SystemController) AddRoom(room *Room) error {
 // Of course, the thermostat also has an effect on turning the fan on or off.
 // But generally, if the room is empty, the fan will not turn on.
 func (s *SystemController) UpdateRoomTemperature(roomID string, newTemp int) error {
+	// Validate temperature
 	if newTemp < 0 {
 		return fmt.Errorf("invalid target temperature")
 	}
+
+	// Find the room safely
 	s.mu.RLock()
 	room, ok := s.Rooms[roomID]
 	s.mu.RUnlock()
@@ -82,43 +69,51 @@ func (s *SystemController) UpdateRoomTemperature(roomID string, newTemp int) err
 		return fmt.Errorf("room does not exist")
 	}
 
-	// Update current temperature and snapshot state
+	// Update current temperature and read state under room lock
 	room.mu.Lock()
 	room.Thermostat.CurrentTemperature = newTemp
+	current := room.Thermostat.CurrentTemperature
 	target := room.Thermostat.TargetTemperature
 	occupied := room.Occupied
-	running := room.FanRunning
 	room.mu.Unlock()
-
-	// apply fan rules
-	if !occupied || newTemp == target {
-		if running {
-			_ = room.StartFan() //
+	// TODO
+	// Case 1: current == target then, fan should be OFF
+	if current == target {
+		if err := room.StopFan(); err != nil {
+			// If fan is already stopped, that's fine
+			if err.Error() != "fan not running" {
+				return err
+			}
 		}
 		return nil
 	}
-	// in this clause the room is occupied and `newTemp != target` (so temperature needs to change and fan should be ON)
-	// if `running == true`, fan is already ON and do nothing
-	// if `running != true`, fan is OFF, and we need to start
-	// Why we ignore "fan already running" error?
-	//	- Because concurrency. Imagine two goroutines at the same time both decide the fan should start:
-	// 		- Goroutine A checks running == false
-	//		- Goroutine B checks running == false
-	// 		- Both call StartFan()
-	// 		- A starts it successfully
-	// 		- B now sees it’s already running and StartFan() returns error "fan already running"
-	// 		- That error is not a “real failure” — the fan is already ON, which is exactly what we want. So we ignore it.
-	if !running {
-		// should succeed; if it returns "fan already running" due to race, you can ignore it
-		if err := room.StartFan(); err != nil && err.Error() != "fan already running" {
+
+	// Case 2: current != target then, fan should be ON, but only if room is occupied
+	// TODO
+	// If room is not occupied, ensure fan is off and exit
+	if !occupied {
+		if err := room.StopFan(); err != nil {
+			// If fan already off, ignore
+			if err.Error() != "fan not running" {
+				return err
+			}
+		}
+		return nil
+	}
+	// Room is occupied and needs adjustment then, start fan
+	if err := room.StartFan(); err != nil {
+		switch err.Error() {
+		case "fan already running", "no adjustment needed", "room is not occupied":
+			// These are acceptable races from our perspective:
+			// - already running -> good
+			// - no adjustment needed -> temp changed in between
+			// - room is not occupied -> occupancy changed
+			return nil
+		default:
 			return err
 		}
-		// Meaning:
-		//	- If StartFan returns nil, good
-		// 	- If StartFan returns "fan already running" → still good (goal achieved)
-		// 	- If StartFan returns any other error (like "room is not occupied" or "no adjustment needed")
-		//	- return it because that’s unexpected here
 	}
+
 	return nil
 }
 
@@ -129,47 +124,53 @@ func (s *SystemController) UpdateRoomTemperature(roomID string, newTemp int) err
 //   - "heating" if it is heating the room,
 //   - "off" if fan is off.
 func (s *SystemController) GenerateReports() map[string]string {
-	// 1. snapshot room pointers safely (don’t hold lock too long)
+	reports := make(map[string]string)
+
+	// Take a snapshot of rooms under read lock
 	s.mu.RLock()
 	rooms := make([]*Room, 0, len(s.Rooms))
-	for _, r := range s.Rooms {
-		rooms = append(rooms, r)
+	for _, room := range s.Rooms {
+		rooms = append(rooms, room)
 	}
 	s.mu.RUnlock()
-	// 2.compute reports without holding controller lock
-	newReports := make(map[string]string, len(rooms))
-	for _, r := range rooms {
-		r.mu.RLock()
-		id := r.ID
-		current := r.Thermostat.CurrentTemperature
-		target := r.Thermostat.TargetTemperature
-		running := r.FanRunning
-		r.mu.RUnlock()
-		//
-		state := "off"
+
+	// Inspect each room independently
+	for _, room := range rooms {
+		if room == nil {
+			continue
+		}
+
+		room.mu.Lock()
+		id := room.ID
+		current := room.Thermostat.CurrentTemperature
+		target := room.Thermostat.TargetTemperature
+		running := room.FanRunning
+		room.mu.Unlock()
+
+		// Default mode
+		mode := "off"
+
 		if running {
-			if current < target {
-				state = "heating"
-			} else if current > target {
-				state = "cooling"
+			if current > target {
+				mode = "cooling"
+			} else if current < target {
+				mode = "heating"
 			} else {
-				state = "off"
+				// current == target but fan running -> logically off,
+				// but this should rarely happen if other logic is correct.
+				mode = "off"
 			}
 		}
-		newReports[id] = state
-		// 3.Store it automatically
-		s.mu.Lock()
-		if s.Reports == nil {
-			s.Reports = make(map[string]string)
-		}
-		s.Reports = newReports
-		s.mu.Unlock()
 
+		if id != "" {
+			reports[id] = mode
+		}
 	}
-	return newReports
+
+	return reports
 }
 
-// Why we take a snapshot of rooms in GenerateReports()?
+// Why we take a snapshot of rooms in GenerateReports?
 // 	- Because `s.Rooms` is a map, and other goroutines may call `AddRoom()` at the same time.
 // 	- If we loop directly over `s.Rooms` while another goroutine writes to it, Go can crash with:
 // 		- fatal error: concurrent map iteration and map write
@@ -186,29 +187,29 @@ func (s *SystemController) GenerateReports() map[string]string {
 
 // GetCurrentTemperature returns the room current temperature
 func (r *Room) GetCurrentTemperature() int {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.Thermostat.CurrentTemperature
 }
 
 // GetTargetTemperature returns the room target temperature
 func (r *Room) GetTargetTemperature() int {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.Thermostat.TargetTemperature
 }
 
 // GetIsRoomOccupied returns the occupancy status of the room
 func (r *Room) GetIsRoomOccupied() bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.Occupied
 }
 
 // GetIsFanRunning indicates whether the room fan is ON or OFF
 func (r *Room) GetIsFanRunning() bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.FanRunning
 }
 
@@ -218,38 +219,125 @@ func (r *Room) GetIsFanRunning() bool {
 //   - Of course, the thermostat temperature also affects whether the fan turns on or off.
 //   - But in general, the fan will not turn on if the room is empty.
 func (r *Room) SetOccupancy(occupied bool) {
+	// Update occupancy and take a snapshot of temperatures under the room lock
 	r.mu.Lock()
 	r.Occupied = occupied
 	current := r.Thermostat.CurrentTemperature
 	target := r.Thermostat.TargetTemperature
 	running := r.FanRunning
-	r.mu.RUnlock()
+	r.mu.Unlock()
 
-	// if room is now empty then fan must be off
+	// If the room is now empty, we must ensure the fan is stopped.
 	if !occupied {
 		if running {
 			_ = r.StartFan()
 		}
 		return
 	}
-	// if room is occupied:
-	// 	- if not adjustment needed then fan should be off.
+
+	// Room is occupied from here on.
+
+	// If temperature is already at target, no need to start the fan.
 	if current == target {
 		if running {
 			_ = r.StopFan()
 		}
 		return
 	}
-	// Room is occupied and needs adjustment, fan should be on
+
+	// Otherwise, room is occupied AND needs adjustment, then try to start the fan.
 	if !running {
-		_ = r.StartFan() // if it returns "fan already running" due to race, it's fine
+		_ = r.StartFan()
 	}
+
 }
 
+// TODO
+
+// StartFan This function activates the room fan.
+// The fans are able to gradually change the room temperature to bring it to its target temperature.
+// Their temperature change rate is 1°C/second.
+//   - Note that each room fan can be turned on or off, and they must all be able to operate in their room at the same time.
 func (r *Room) StartFan() error {
+	r.mu.Lock()
+
+	// 1. If fan is already running
+	if r.FanRunning {
+		r.mu.Unlock()
+		return fmt.Errorf("fan already running")
+	}
+
+	// 2. If room is not occupied
+	if !r.Occupied {
+		r.mu.Unlock()
+		return fmt.Errorf("room is not occupied")
+	}
+
+	// 3. If temperature does not need adjustment
+	if r.Thermostat.CurrentTemperature == r.Thermostat.TargetTemperature {
+		r.mu.Unlock()
+		return fmt.Errorf("no adjustment needed")
+	}
+
+	// 4. Otherwise, start the fan
+	r.FanRunning = true
+	r.mu.Unlock()
+
+	// Start a background goroutine to adjust temperature 1°C per second
+	go func(room *Room) {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			room.mu.Lock()
+
+			// If fan was turned off or room became empty, stop the goroutine
+			if !room.FanRunning || !room.Occupied {
+				room.mu.Unlock()
+				return
+			}
+
+			cur := room.Thermostat.CurrentTemperature
+			target := room.Thermostat.TargetTemperature
+
+			// If we've already reached the target, stop the fan
+			if cur == target {
+				room.FanRunning = false
+				room.mu.Unlock()
+				return
+			}
+
+			// Move 1 degree toward the target
+			if cur < target {
+				room.Thermostat.CurrentTemperature++
+			} else {
+				room.Thermostat.CurrentTemperature--
+			}
+
+			// If we reached the target after moving, stop the fan
+			if room.Thermostat.CurrentTemperature == target {
+				room.FanRunning = false
+				room.mu.Unlock()
+				return
+			}
+
+			room.mu.Unlock()
+		}
+	}(r)
+
 	return nil
 }
 
+// StopFan stops the room fan.
+// If the fan is not running, it returns "fan not running" as specified.
 func (r *Room) StopFan() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.FanRunning {
+		return fmt.Errorf("fan not running")
+	}
+
+	r.FanRunning = false
 	return nil
 }
