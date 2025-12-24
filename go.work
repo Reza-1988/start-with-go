@@ -21,6 +21,7 @@ use (
 	./library-trouble
 	./milgram-experiment
 	./nameless-problem
+	./old-school
 	./online-library
 	./phone-book
 	./quli-airpods
