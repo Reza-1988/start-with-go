@@ -402,3 +402,64 @@ func TestSimple_1(t *testing.T) {
 	fmt.Println(school_1, teacher_1, class_1)
 	println("end of test")
 }
+
+// MORE EXPLANATION
+// Difference between startTestServer and createConnection
+//	1. `startTestServer(port)`
+// 		- Its job is to run your server.
+// 		- Calls `NewServer()` to create a server instance.
+// 		- Runs `server.Start(port)` inside a goroutine because `Start()` usually blocks (it goes into an `Accept()` loop and doesn’t return).
+// 		- Sleeps for 200ms to make sure the server is actually up and listening on the port.
+// 		- Returns the `server` so the test can stop it later.
+// 		- So: this function only starts the server.
+// 	2. `createConnection(t)`
+// 		- Its job is to start the server and connect to it, then return JSON tools.
+// 		- First calls `startTestServer(PORT)` → server starts
+// 		- Then uses `net.Dial("tcp", "localhost:8080")` to connect like a client
+// 		- Then creates:
+// 			- `json.NewEncoder(conn)` to send requests
+// 			- `json.NewDecoder(conn)` to read responses
+// 			- Returns the encoder/decoder so the test can use them.
+// 		- So: this function creates the client connection to the server (and gives you encoder/decoder).
+//
+// What is a Socket?
+// 	- A socket is a two-way communication channel between two programs over a network.
+// 	- Think of it like a pipe:
+// 		- One side is the server (it listens)
+// 		- The other side is the client (it connects)
+// 		- After the connection is established, both sides can send bytes and receive bytes
+// 		- In TCP, this “pipe” stays open until one side closes it.
+//
+// What does `net.Dial` mean?
+// 	- `net.Dial` means:
+// 		- “Connect to an address and port and create a TCP connection.”
+// 		- Example from your test:
+// 		- `conn, err := net.Dial("tcp", "localhost:8080")`
+//		- This means:
+// 			1. Go to your own machine (`localhost`)
+//			2. Port `8080`
+// 			3. Using protocol `tcp`
+// 			4. If a server is listening there → the connection is created
+// 			5. The result is conn (the “pipe”)
+// 		- If the server is not running or the port is wrong → you get an error in `err`.
+// What does the server do on the other side?
+// 	- A server usually does:
+// 		- `ln, _ := net.Listen("tcp", ":8080")` // listen on the port
+//		- `conn, _ := ln.Accept()`              // when a client Dial()s, accept creates a connection
+//	- So:
+// 		- `Listen` = get ready for connections
+// 		- `Dial` = try to connect
+// 		- `Accept` = accept the connection and produce conn
+//
+// What happens after `Dial`?
+// 	- Once `conn` is created:
+// 		- Client can write:
+// 			- `conn.Write(...)`
+// 		- Server can read:
+// 			- `conn.Read(...)`
+// - In your test, instead of raw Read/Write, they use JSON:
+// 		- encoder := json.NewEncoder(conn) // send JSON
+//		- decoder := json.NewDecoder(conn) // receive JSON
+// - Each time:
+// 		- `encoder.Encode(req)` → sends one JSON message
+//		- `decoder.Decode(&resp)` → reads one JSON message
