@@ -59,7 +59,7 @@ func (s *server) Start(port string) error {
 		if err != nil {
 			// If the listener was closed via Stop(), Accept returns an error.
 			// Treat that as a normal shutdown.
-			if ne, ok := err.(*net.OpError); ok && !ne.Temporary() { // TODO
+			if errors.Is(err, net.ErrClosed) { // TODO
 				// This is handling the special case when you stop the server.
 				// 	- When you call `s.listener.Close()` in `Stop()`, the listener becomes closed.
 				// 	- Then the blocking call `Accept()` wakes up and returns an error like “use of closed network connection”.
@@ -178,7 +178,9 @@ func (s *server) handleConn(conn net.Conn) {
 func (s *server) route(req Request) Response {
 	switch req.Method {
 	case CreateSchoolMethod:
-		return s.handleCreatSchool(req.Data)
+		return s.handleCreateSchool(req.Data)
+	case CreatePersonMethod:
+		return s.handlerCreatePerson(req.Data)
 	// TODO: Not implemented it this step
 
 	// If the method is unknown/not implemented, return an error response.

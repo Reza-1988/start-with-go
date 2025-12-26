@@ -99,3 +99,165 @@ func (s *server) handleCreateSchool(data interface{}) Response {
 // 				- now Go can fill struct fields using JSON tags
 // 			- It’s basically:
 // 				- Convert generic data back to JSON, then decode it properly
+// - A tiny example:
+//	- Request JSON: `{"method":"/school/create","data":{"name":"school_1"}}`
+// 	- after `Decode(&req):
+//		- `req.Method == "school/createa"`
+//		- `req.Data == map[string]any{"name":"school_1"}`
+//	- Then:
+//		- marshal map → `{"name":"school_1"}`
+//		- unmarshal into School → `School{Name:"school_1"}`
+
+// handlerCreatePerson handles the requests for creating a person.
+//   - Input `data` is whatever came from Request.Data
+//   - It returns a Response (success/failure + data)
+func (s *server) handlerCreatePerson(data interface{}) Response {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return Response{
+			Status:  false,
+			Message: "bad data format",
+		}
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return Response{
+			Status:  false,
+			Message: "bad data",
+		}
+	}
+	var p Person
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return Response{
+			Status:  false,
+			Message: "bad person payload",
+		}
+	}
+	if p.Name == "" {
+		return Response{
+			Status:  false,
+			Message: "name is required",
+		}
+	}
+	res, err := s.db.Exec(`INSERT INTO people(name) VALUES(?)`, p.Name)
+	if err != nil {
+		return Response{
+			Status:  false,
+			Message: "db insert failed",
+		}
+	}
+	newID, err := res.LastInsertId()
+	if err != nil {
+		return Response{
+			Status:  false,
+			Message: "db id failed",
+		}
+	}
+	p.Id = uint(newID)
+	return Response{
+		Status:  true,
+		Message: "person created",
+		Data:    p,
+	}
+}
+
+func (s *server) handlerCreateClass(data interface{}) Response {
+	// 1. Convert Request.Data (Interface{}) to Class
+	m, ok := data.(map[string]any)
+	if !ok {
+		return Response{
+			Status:  false,
+			Message: "bad data format",
+		}
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return Response{
+			Status:  false,
+			Message: "bad data",
+		}
+	}
+	var c Class
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return Response{
+			Status:  false,
+			Message: "bad class payload",
+		}
+	}
+	// 2. Basic validation
+	if c.Name == "" {
+		return Response{
+			Status:  false,
+			Message: "name is requires",
+		}
+	}
+	if c.SchoolId == 0 {
+		return Response{
+			Status:  false,
+			Message: "school_id is required",
+		}
+	}
+	if c.Teacher.Id == 0 {
+		return Response{
+			Status:  false,
+			Message: "teache id is required",
+		}
+	}
+	// 3. Check school exist
+
+	// We create a variable to hold the school id if it exists.
+	// We don’t actually need the value, we just want to know “does a row exist?”
+	var schoolExists uint
+	// `QueryRow(...)` runs the SQL query that should return one row.
+	// The SQL means: “find a school row where id = c.SchoolId”.
+	// `?` is a safe placeholder; `c.SchoolId` is passed separately.
+	// `.Scan(&schoolExists)` takes the returned column (id) and puts it into schoolExists.
+	err = s.db.QueryRow(`SELECT id FROM schools WHERE id = ?`, c.SchoolId).Scan(&schoolExists)
+	if err != nil {
+		return Response{
+			Status:  false,
+			Message: "teacher not found",
+		}
+	}
+	// 4.Check teacher exists (and load name to return consistent Teacher object)
+
+	// Create a Person struct to store the teacher data we read from DB.
+	var teacher Person
+	// Same idea as before, but now we select two columns: id and name.
+	// We search in people table using teacher id.
+	// Scan(&teacher.Id, &teacher.Name) fills the struct fields.
+	// If the teacher exists, you now have a clean teacher object from DB.
+	err = s.db.QueryRow(`SELECT id, name FROM people WHERE id = ?`, c.Teacher.Id).Scan(&teacher.Id, &teacher.Name)
+	// If teacher id doesn’t exist → query returns no rows → Scan returns error.
+	// Then we return failure because you can’t create a class with a teacher that doesn’t exist.
+	if err != nil {
+		return Response{
+			Status:  false,
+			Message: "teacher not found",
+		}
+	}
+	// 5. Insert class
+	res, err := s.db.Exec(
+		`INSERT INTO classes(name, school_id, teacher_id, VALUES(?,?,?))`,
+		c.Name, c.SchoolId, teacher.Id,
+	)
+	if err != nil {
+		return Response{
+			Status:  false,
+			Message: "db insert failed",
+		}
+	}
+	newID, err := res.LastInsertId()
+	if err != nil {
+		return Response{Status: false, Message: "db id failed"}
+	}
+	// 6. Build response object exactly like tests expect
+	c.Id = uint(newID)
+	c.Teacher = teacher
+	// c.Students left empty/omitted // TODO: why?
+	return Response{
+		Status:  true,
+		Message: "class created",
+		Data:    c,
+	}
+}

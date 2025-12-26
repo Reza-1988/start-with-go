@@ -31,7 +31,8 @@ func (s *server) initDBOnce() error {
 		//	- Keeps things simpler and avoids "database is locked" errors.
 		db.SetMaxOpenConns(1)
 		db.SetMaxIdleConns(1)
-		// Create minimal table fo this step
+
+		// Create school table
 		// TODO: Implement other tables
 		// Run a SQL command that creates the schools table if it doesn’t exist.
 		_, err = db.Exec(`
@@ -40,7 +41,7 @@ func (s *server) initDBOnce() error {
 				name TEXT NOT NULL
 			);
         `)
-		// If table creation fails:
+		// If school table creation fails:
 		// 	- close the database handle (cleanup)
 		// 	- store the error in initErr
 		// 	- stop
@@ -49,6 +50,36 @@ func (s *server) initDBOnce() error {
 			initErr = err
 			return
 		}
+		// Create people table
+		_, err = db.Exec(`
+			CREATE TABLE IF NOT EXISTS people (
+			    id INTEGER PRIMARY KEY AUTOINCREMENT,
+			    name TEXT NOT NULL
+			                                 
+			);
+        `)
+		if err != nil {
+			_ = db.Close()
+			initErr = err
+			return
+		}
+		// create classes table
+		_, err = db.Exec(`
+			CREATE TABLE IF NOT EXISTS classes (
+			    id INTEGER PRIMARY KEY AUTOINCREMENT,
+			    name TEXT NOT NULL,
+			    school_id INTEGER NOT NULL,
+			    teacher_id INTEGER NOT NULL, 
+			    FOREIGN KEY (school_id) REFERENCES school(id),
+			    FOREIGN KEY (teache_id) REFEENCES people(id)
+			);
+        `)
+		if err != nil {
+			_ = db.Close()
+			initErr = err
+			return
+		}
+
 		// Save the opened database handle into the server struct (s.db)
 		// So later handlers can do `s.db.Exec(...)` / `s.db.QueryRow(...)`.
 		s.db = db
