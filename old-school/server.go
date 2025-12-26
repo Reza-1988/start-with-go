@@ -172,3 +172,20 @@ func (s *server) handleConn(conn net.Conn) {
 		_ = enc.Encode(resp)
 	} // Loop continues, waiting for the next request on the same connection.
 }
+
+// route decides which handler function should process the request.
+// It checks req.Method (the command) and passes req.Data (the payload) to the correct handler.
+func (s *server) route(req Request) Response {
+	switch req.Method {
+	case CreateSchoolMethod:
+		return s.handleCreatSchool(req.Data)
+	// TODO: Not implemented it this step
+
+	// If the method is unknown/not implemented, return an error response.
+	default:
+		return Response{
+			Status:  false,
+			Message: "method not implemented",
+		}
+	}
+}
