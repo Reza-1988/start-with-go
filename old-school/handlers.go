@@ -195,7 +195,7 @@ func (s *server) handleCreateClass(data interface{}) Response {
 	if c.Name == "" {
 		return Response{
 			Status:  false,
-			Message: "name is requires",
+			Message: "name is required",
 		}
 	}
 	if c.SchoolId == 0 {
@@ -207,11 +207,10 @@ func (s *server) handleCreateClass(data interface{}) Response {
 	if c.Teacher.Id == 0 {
 		return Response{
 			Status:  false,
-			Message: "teache id is required",
+			Message: "teacher id is required",
 		}
 	}
 	// 3. Check school exist
-
 	// We create a variable to hold the school id if it exists.
 	// We don’t actually need the value, we just want to know “does a row exist?”
 	var schoolExists uint
@@ -220,14 +219,19 @@ func (s *server) handleCreateClass(data interface{}) Response {
 	// `?` is a safe placeholder; `c.SchoolId` is passed separately.
 	// `.Scan(&schoolExists)` takes the returned column (id) and puts it into schoolExists.
 	err = s.db.QueryRow(`SELECT id FROM schools WHERE id = ?`, c.SchoolId).Scan(&schoolExists)
+	if err == sql.ErrNoRows {
+		return Response{
+			Status:  false,
+			Message: "school not found",
+		}
+	}
 	if err != nil {
 		return Response{
 			Status:  false,
-			Message: "teacher not found",
+			Message: "school not found",
 		}
 	}
 	// 4.Check teacher exists (and load name to return consistent Teacher object)
-
 	// Create a Person struct to store the teacher data we read from DB.
 	var teacher Person
 	// Same idea as before, but now we select two columns: id and name.
@@ -237,15 +241,39 @@ func (s *server) handleCreateClass(data interface{}) Response {
 	err = s.db.QueryRow(`SELECT id, name FROM people WHERE id = ?`, c.Teacher.Id).Scan(&teacher.Id, &teacher.Name)
 	// If teacher id doesn’t exist → query returns no rows → Scan returns error.
 	// Then we return failure because you can’t create a class with a teacher that doesn’t exist.
+	if err == sql.ErrNoRows {
+		return Response{
+			Status:  false,
+			Message: "teacher not found",
+		}
+	}
 	if err != nil {
 		return Response{
 			Status:  false,
 			Message: "teacher not found",
 		}
 	}
+	// 5. Rule: a person cannot be both student and teacher.
+	//	- If this person is enrolled as a student anywhere, they cannot be assigned as a teacher.
+	var tmp int
+	err = s.db.QueryRow(`SELECT 1 FROM class_students WHERE student_id = ? LIMIT 1`,
+		teacher.Id).Scan(&tmp)
+
+	if err == nil {
+		return Response{
+			Status:  false,
+			Message: "student cannot be teacher",
+		}
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return Response{
+			Status:  false,
+			Message: "db error",
+		}
+	}
 	// 5. Insert class
 	res, err := s.db.Exec(
-		`INSERT INTO classes(name, school_id, teacher_id, VALUES(?,?,?))`,
+		`INSERT INTO classes(name, school_id, teacher_id) VALUES(?,?,?)`,
 		c.Name, c.SchoolId, teacher.Id,
 	)
 	if err != nil {
@@ -518,4 +546,121 @@ func (s *server) handleAddStudentToClass(data interface{}) Response {
 		Message: "student added to class",
 		Data:    student,
 	}
+}
+
+func (s *server) handleWhoAmI(data interface{}) Response {
+	// 1. Parse payload into Person (we only need Id).
+	m, ok := data.(map[string]any)
+	if !ok {
+		return Response{
+			Status:  false,
+			Message: "bad data format",
+		}
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return Response{
+			Status:  false,
+			Message: "bad data",
+		}
+	}
+	var req Person
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return Response{
+			Status:  false,
+			Message: "bad payload",
+		}
+	}
+	if req.Id == 0 {
+		return Response{
+			Status:  false,
+			Message: "id is required",
+		}
+	}
+
+	// 2. Load the person from DB (must exists)
+	var p Person
+	err = s.db.QueryRow(`SELECT id, name FROM people WHERE id = ?`, req.Id).
+		Scan(&p.Id, &p.Name)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Response{
+				Status:  false,
+				Message: "person not found",
+			}
+		}
+		return Response{
+			Status:  false,
+			Message: "db error",
+		}
+	}
+
+	// 3. Check if this person is a teacher (classes where teacher_id = p.id)
+	teacherClasses, err := s.getTeacherClassIDs(p.Id)
+	if err != nil {
+		return Response{
+			Status:  false,
+			Message: "db error",
+		}
+	}
+	if len(teacherClasses) > 0 {
+		p.Classes = teacherClasses
+		return Response{
+			Status:  true,
+			Message: "ok",
+			Data:    p,
+		}
+	}
+	// 4. Otherwise treat as student: classes enrolled class_students
+	studentClasses, err := s.getStudentClassIDs(p.Id)
+	if err != nil {
+		return Response{
+			Status:  false,
+			Message: "db error",
+		}
+	}
+	p.Classes = studentClasses
+	return Response{
+		Status:  true,
+		Message: "ok",
+		Data:    p,
+	}
+}
+
+// getTeacherClassIDs returns class IDs taught by a teacher.
+func (s *server) getTeacherClassIDs(teacherID uint) ([]uint, error) {
+	rows, err := s.db.Query(`SELECT id FROM classes WHERE teacher_id = ? ORDER BY id`, teacherID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []uint
+	for rows.Next() {
+		var id uint
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// getStudentClassIDs returns class IDs a student is enrolled in.
+func (s *server) getStudentClassIDs(studentID uint) ([]uint, error) {
+	rows, err := s.db.Query(`SELECT class_id FROM class_students WHERE student_id = ? ORDER BY  class_id`, studentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []uint
+	for rows.Next() {
+		var id uint
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }

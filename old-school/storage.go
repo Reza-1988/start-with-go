@@ -14,11 +14,16 @@ func (s *server) initDBOnce() error {
 	// dbOnce is `sync.Once`.
 	// Do(func(){...}) guarantees the coe inside runs only one time, even if many goroutine call initDBOnce().
 	s.dbOnce.Do(func() {
-		// Open a SQLite database file named `school.db.
-		// if the file doesn't exist, SQLite creates it automatically.
-		//	- "_busy_timeout=5000" means: if database is busy/locked, wait up to 5 seconds.
-		//	- "_foreign_keys=1" enables foreign key rules (useful later when you add class/person relations)
-		db, err := sql.Open("sqlite", "file:school.db?_busy_timeout=5000&_foreign_keys=1")
+		// Open an in-memory SQLite database (no file on disk).
+		// This is great for tests because every server run starts with a clean database,
+		// so IDs start from 1 and old data doesn't remain.
+		//
+		// Connection string details:
+		// - "file:memdb1?mode=memory&cache=shared" creates a named in-memory DB.
+		//   Using "cache=shared" lets the same in-memory DB be reused within the same process.
+		// - "_busy_timeout=5000" means: if the database is busy/locked, wait up to 5 seconds.
+		// - "_foreign_keys=1" enables foreign key rules (useful for school/class relations).
+		db, err := sql.Open("sqlite", "file:memdb1?mode=memory&cache=shared&_busy_timeout=5000&_foreign_keys=1")
 
 		// If opening the DB fails, save the error into initErr and stop initialization.
 		if err != nil {
@@ -26,9 +31,10 @@ func (s *server) initDBOnce() error {
 			return
 		}
 		// Small connection pool settings for local sqlite usage
-		// 	- SQLite works best with one writer connection.
+		// 	- SQLite works best with a single open connection for this kind of project.
 		// 	- This limits `database/sql` from opening many connections at the same time.
 		//	- Keeps things simpler and avoids "database is locked" errors.
+		//	- Keeping MaxOpenConns(1) also helps ensure the in-memory DB stays consistent.
 		db.SetMaxOpenConns(1)
 		db.SetMaxIdleConns(1)
 
@@ -69,8 +75,8 @@ func (s *server) initDBOnce() error {
 			    name TEXT NOT NULL,
 			    school_id INTEGER NOT NULL,
 			    teacher_id INTEGER NOT NULL, 
-			    FOREIGN KEY (school_id) REFERENCES school(id),
-			    FOREIGN KEY (teache_id) REFEENCES people(id)
+			    FOREIGN KEY (school_id) REFERENCES schools(id),
+			    FOREIGN KEY (teacher_id) REFEENCES people(id)
 			);
         `)
 		if err != nil {
@@ -90,8 +96,8 @@ func (s *server) initDBOnce() error {
 			    class_id INTEGER NOT NULL,
 			    student_id INTEGER NOT NULL,
 			    PRIMARY KEY (class_id, student_id),
-			    FOREIGN KEY (class_id) REFERENCES classes(id).
-			    FOREIGN KEY (student_id) REFERENCES poople(id)
+			    FOREIGN KEY (class_id) REFERENCES classes(id),
+			    FOREIGN KEY (student_id) REFERENCES people(id)
 			);
         `)
 

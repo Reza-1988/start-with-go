@@ -185,6 +185,8 @@ func (s *server) route(req Request) Response {
 		return s.handleCreateClass(req.Data)
 	case AddStudentToClassMethod:
 		return s.handleAddStudentToClass(req.Data)
+	case WhoAmIMethod:
+		return s.handleWhoAmI
 	// TODO: Not implemented it this step
 
 	// If the method is unknown/not implemented, return an error response.
