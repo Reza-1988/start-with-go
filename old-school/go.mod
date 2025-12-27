@@ -1,4 +1,4 @@
-module old-school
+module github.com/Reza-1988/start-with-go/old-school
 
 go 1.25.5
 
