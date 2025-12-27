@@ -54,8 +54,7 @@ func (s *server) initDBOnce() error {
 		_, err = db.Exec(`
 			CREATE TABLE IF NOT EXISTS people (
 			    id INTEGER PRIMARY KEY AUTOINCREMENT,
-			    name TEXT NOT NULL
-			                                 
+			    name TEXT NOT NULL                             
 			);
         `)
 		if err != nil {
@@ -79,6 +78,22 @@ func (s *server) initDBOnce() error {
 			initErr = err
 			return
 		}
+		// In our system:
+		// 	- One Class can have many Students
+		// 	- One Student can join many Classes (within the same school)
+		// 	- That is a classic many-to-many relationship, and in SQL you represent it with a separate table (a “link table”).
+		// Why not store students inside classes table directly?
+		// 	- Because classes would need to store a list of students, and SQL tables don’t store lists well.
+		// Create class_student (many-to-many join table)
+		_, err = db.Exec(`
+			CREATE TABLE IF NOT EXISTS class_students (
+			    class_id INTEGER NOT NULL,
+			    student_id INTEGER NOT NULL,
+			    PRIMARY KEY (class_id, student_id),
+			    FOREIGN KEY (class_id) REFERENCES classes(id).
+			    FOREIGN KEY (student_id) REFERENCES poople(id)
+			);
+        `)
 
 		// Save the opened database handle into the server struct (s.db)
 		// So later handlers can do `s.db.Exec(...)` / `s.db.QueryRow(...)`.

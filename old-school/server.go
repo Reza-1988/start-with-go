@@ -180,7 +180,11 @@ func (s *server) route(req Request) Response {
 	case CreateSchoolMethod:
 		return s.handleCreateSchool(req.Data)
 	case CreatePersonMethod:
-		return s.handlerCreatePerson(req.Data)
+		return s.handleCreatePerson(req.Data)
+	case CreateClassMethod:
+		return s.handleCreateClass(req.Data)
+	case AddStudentToClassMethod:
+		return s.handleAddStudentToClass(req.Data)
 	// TODO: Not implemented it this step
 
 	// If the method is unknown/not implemented, return an error response.

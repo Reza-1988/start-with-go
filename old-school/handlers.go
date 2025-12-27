@@ -1,6 +1,10 @@
 package main
 
-import "encoding/json"
+import (
+	"database/sql"
+	"encoding/json"
+	"strings"
+)
 
 // handleCreateSchool handles the requests for creating a school.
 //   - Input `data` is whatever came from Request.Data
@@ -108,10 +112,10 @@ func (s *server) handleCreateSchool(data interface{}) Response {
 //		- marshal map → `{"name":"school_1"}`
 //		- unmarshal into School → `School{Name:"school_1"}`
 
-// handlerCreatePerson handles the requests for creating a person.
+// handleCreatePerson handles the requests for creating a person.
 //   - Input `data` is whatever came from Request.Data
 //   - It returns a Response (success/failure + data)
-func (s *server) handlerCreatePerson(data interface{}) Response {
+func (s *server) handleCreatePerson(data interface{}) Response {
 	m, ok := data.(map[string]any)
 	if !ok {
 		return Response{
@@ -161,7 +165,10 @@ func (s *server) handlerCreatePerson(data interface{}) Response {
 	}
 }
 
-func (s *server) handlerCreateClass(data interface{}) Response {
+// handleCreateClass handles the requests for creating a class.
+//   - Input `data` is whatever came from Request.Data
+//   - It returns a Response (success/failure + data)
+func (s *server) handleCreateClass(data interface{}) Response {
 	// 1. Convert Request.Data (Interface{}) to Class
 	m, ok := data.(map[string]any)
 	if !ok {
@@ -254,10 +261,261 @@ func (s *server) handlerCreateClass(data interface{}) Response {
 	// 6. Build response object exactly like tests expect
 	c.Id = uint(newID)
 	c.Teacher = teacher
-	// c.Students left empty/omitted // TODO: why?
+	// c.Students left empty/omitted because at class creation time there are no students yet,
+	// and also because the tests don’t expect students in the create-class response.
 	return Response{
 		Status:  true,
 		Message: "class created",
 		Data:    c,
+	}
+}
+
+func (s *server) handleAddStudentToClass(data interface{}) Response {
+	// 1. Parse payload
+	m, ok := data.(map[string]any)
+	if !ok {
+		return Response{
+			Status:  false,
+			Message: "bad data format",
+		}
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return Response{
+			Status:  false,
+			Message: "bad data",
+		}
+	}
+	var req AddStudentToClassReq
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return Response{
+			Status:  false,
+			Message: "bad payload",
+		}
+	}
+	if req.StudentId == 0 && req.ClassId == 0 {
+		return Response{
+			Status:  false,
+			Message: "student_id and class_id are required",
+		}
+	}
+	// Use a transaction to checks + insert are consistent
+	//	- What is a transaction? A transaction is like doing several database steps as one safe unit.
+	// 		- It means:
+	// 			- either all steps succeed → we `Commit()`
+	// 			- or any step fails → everything is cancelled → we `Rollback()`
+	tx, err := s.db.Begin() // Start a transaction, tx is like a temporary DB “session” where all queries are grouped.
+	if err != nil {         // If DB can’t start a transaction, we fail.
+		return Response{
+			Status:  false,
+			Message: "db error",
+		}
+	}
+	// This is a safety net.
+	// 	- If the function returns early (because of any error), rollback will run automatically.
+	// 	- If later we successfully call `tx.Commit()`, the rollback does nothing (safe).
+	defer tx.Rollback()
+	// Why do we use a transaction here?
+	// 	- In AddStudentToClass we do multiple steps:
+	// 		1. check student exists
+	// 		2. check class exists
+	// 		3. check rules (teacher/student, same school)
+	// 		4. insert into class_students
+	// 	- If we do these steps without a transaction, this can happen:
+	// 		- You check rule
+	// 		- Before you insert, another request changes the data (race condition)
+	// 		- Now your insert could break the rules or create inconsistent state
+	// 		- A transaction makes sure:
+	// 			- The checks and the insert happen together on a consistent view of the database
+
+	// 2. Load student (must exist)
+	var student Person
+	err = tx.QueryRow(`SELECT id, name FROM people WHERE id = ?`, req.StudentId).
+		Scan(&student.Id, &student.Name)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Response{
+				Status:  false,
+				Message: "student not found",
+			}
+		}
+		return Response{
+			Status:  false,
+			Message: "db error",
+		}
+	}
+	// 3. Load class + school (must exist)
+	var classSchoolID uint
+	err = tx.QueryRow(`SELECT school_id FROM classes WHERE id = ?`, req.ClassId).
+		Scan(&classSchoolID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Response{
+				Status:  false,
+				Message: "class not found",
+			}
+		}
+		return Response{
+			Status:  false,
+			Message: "db error",
+		}
+	}
+	// 4. Rule: a person cannot be both teacher and student
+	// 	- If this person teaches any class, reject enrollment as student.
+	var tmp int // We create a temporary variable to store the result. We don’t care about the actual value, we just want to know if a row exists.
+	err = tx.QueryRow(`SELECT 1 FROM classes WHERE teacher_id = ? LIMIT 1`, req.StudentId).
+		Scan(&tmp)
+	// - `SELECT 1` means:
+	//		- If a row exists, return the number 1
+	//		- We’re not selecting class data; we only want yes/no.
+	// - `FROM classes`
+	// 		- look inside the `classes` table.
+	// - `WHERE teacher_id = ?`
+	// 		- find classes where the teacher id equals this person’s id.
+	// 		- `?` is a placeholder, and we pass `req.StudentId` safely.
+	// - LIMIT 1
+	// 		- stop after finding the first match (faster).
+	// - What QueryRow(...).Scan(&tmp) does:
+	// 	- If the query finds a row:
+	//		- it returns one row containing 1
+	// 		- Scan(&tmp) succeeds
+	// 		- so err == nil
+	// 	- If the query finds no rows:
+	// 		- Scan returns sql.ErrNoRows
+	// - If there is a real database problem:
+	// 	- you get some other error
+	if err == nil {
+		return Response{
+			Status:  false,
+			Message: "teacher cannot be student",
+		}
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return Response{
+			Status:  false,
+			Message: "db error",
+		}
+	}
+	// 5. Rule: student can only enroll in classes of ONE school
+	// 	- If student already enrolled in another school's class, reject.
+	err = tx.QueryRow(`
+		SELECT 1
+		FROM class_sutdents cs
+		JOIN classes c ON c.id = cs.class_id
+		where cs.student_id = ? AND c.school_id <> ?
+		LIMIT 1
+    `, req.StudentId, classSchoolID).Scan(&tmp)
+	// What data do we have here?
+	// 	- `req.StudentId` → which student wants to enroll
+	// 	- `classSchoolID`→ the school of the class they are trying to join (we already read it before)
+	// 	- `class_students` table → stores enrollments (class_id, student_id)
+	// 	- `classes table` → tells us each class belongs to which school (school_id)
+	// The SQL query meaning:
+	//	- `SELECT 1`
+	//		- We only want to know: “does such a row exist?
+	//		- Return 1 if found.
+	// 	- `FROM class_students cs`
+	// 		- Look at enrollments.
+	// 		- cs is just a short name (alias).
+	//	- `JOIN classes c ON c.id = cs.class_id`
+	// 		- For each enrollment row, connect it to its class row.
+	// 		- This gives us access to `c.school_id`.
+	// 	- `WHERE cs.student_id = ?`
+	// 		- Only check enrollments for this student.
+	//	- `AND c.school_id <> ?`
+	// 		- <> means “not equal”.
+	// 		- So: find enrollments where the class’s school is different from the school we are trying to join now.
+	// 	- `LIMIT 1`
+	// 		- Stop early if we find one such case.
+	//
+	// Tiny example:
+	// 	- Student 2 is enrolled in:
+	// 		- class 10 (school 1)
+	// 	- Now they try to join:
+	// 		- class 20 (school 2)
+	// - Query checks: does student 2 have an enrollment with school_id != 2 ?
+	// 		- Yes (school 1 != 2) → reject
+	// - If they try class 11 (school 1):
+	// 		- school 1 != 1 is false → no row → allowed
+
+	if err == nil {
+		return Response{
+			Status:  false,
+			Message: "student can only enroll in one school",
+		}
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return Response{
+			Status:  false,
+			Message: "db error",
+		}
+	}
+	// 6. Inser enrollment
+	_, err = tx.Exec(`INSERT INTO class_sutudents(class_id, student_id) VALUES(?, ?) `,
+		req.ClassId, req.StudentId)
+	if err != nil {
+		// Duplicate enrollment (PRIMARY KEY constraint)
+		//	- Because class_students table has this rule: `PRIMARY KEY (class_id, student_id)`
+		//	- That means: the pair (class_id, student_id) must be unique, you cannot insert the same pair again
+		// Explanation:
+		//	- SQLite returns an error message text when the constraint is violated.
+		// 	- The exact error string can vary by driver/version, but usually includes phrases like:
+		// 		- "UNIQUE constraint failed"
+		// 		- "PRIMARY KEY constraint failed" (or mentions PRIMARY KEY)
+		//	- So this code checks the error message text:
+		// 	- If it looks like a duplicate constraint error, we return a friendly message: "already enrolled"
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") ||
+			strings.Contains(err.Error(), "PRIMARY KEY") {
+			return Response{
+				Status:  false,
+				Message: "already enrolled",
+			}
+		}
+		return Response{
+			Status:  false,
+			Message: "db insert failed",
+		}
+		// Database handle this rules already we define in database, just We are interpreting the error to give the correct message.
+		// When `err != nil`, we want to know why it failed:
+		// 	- If it failed because the student is already enrolled → return "already enrolled"
+		// 	- If it failed for another reason (DB locked, foreign key error, syntax error) → return "db insert failed"
+	}
+	if err := tx.Commit(); err != nil {
+		return Response{
+			Status:  false,
+			Message: "db commit failed",
+		}
+	}
+	// 7. Return updated student with class ids.
+	// 	- `student` is a Person struct representing that student:
+	// 		- `student.Id`
+	// 		- `student.Name`
+	// 	- At that moment, `student.Classes` is still empty (zero value).
+	//	- `Classes` is not stored inside the people table directly. It’s a computed field: we fill it by querying `class_students`.
+	rows, err := s.db.Query(`SELECT class_id FROM class_students WHERE student_id = ? ORDER BY class_id`,
+		req.StudentId) // This query: returns all class IDs the student is enrolled in.
+	if err != nil {
+		return Response{
+			Status:  false,
+			Message: "db error",
+		}
+		defer rows.Close()
+	}
+	var classIDs []uint // We collect all class IDs inside this slice
+	for rows.Next() {
+		var cid uint
+		if err := rows.Scan(&cid); err != nil {
+			return Response{
+				Status:  false,
+				Message: "db error",
+			}
+		}
+		classIDs = append(classIDs, cid)
+	}
+	student.Classes = classIDs
+	return Response{
+		Status:  true,
+		Message: "student added to class",
+		Data:    student,
 	}
 }
