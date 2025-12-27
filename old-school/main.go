@@ -1,11 +1,5 @@
 package main
 
-import (
-	"database/sql"
-	"net"
-	"sync"
-)
-
 const (
 	CreateSchoolMethod      = "/school/create"
 	CreateClassMethod       = "/class/create"

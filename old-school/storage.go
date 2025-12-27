@@ -1,6 +1,9 @@
 package main
 
-import "database/sql"
+import (
+	"database/sql"
+	_ "modernc.org/sqlite"
+)
 
 // initDBOnce opens SQLite and creates tables if needed.
 // This function makes sure the SQLite database is ready to use.
@@ -14,16 +17,29 @@ func (s *server) initDBOnce() error {
 	// dbOnce is `sync.Once`.
 	// Do(func(){...}) guarantees the coe inside runs only one time, even if many goroutine call initDBOnce().
 	s.dbOnce.Do(func() {
-		// Open an in-memory SQLite database (no file on disk).
-		// This is great for tests because every server run starts with a clean database,
-		// so IDs start from 1 and old data doesn't remain.
+		// In-memory database (no file on disk):
+		//   - "file:memdb1?mode=memory&cache=shared..."
 		//
-		// Connection string details:
-		// - "file:memdb1?mode=memory&cache=shared" creates a named in-memory DB.
-		//   Using "cache=shared" lets the same in-memory DB be reused within the same process.
-		// - "_busy_timeout=5000" means: if the database is busy/locked, wait up to 5 seconds.
-		// - "_foreign_keys=1" enables foreign key rules (useful for school/class relations).
+		// What it means:
+		// - Data lives only in RAM and is deleted when the program ends.
+		// - No .db file is created.
+		// - Great for tests: every run starts fresh, so IDs start from 1.
+		//
+		// Why "cache=shared"? (in simple words)
+		// - It helps all parts of this program reuse the same in-memory DB instance.
+		//
+		// Other flags:
+		// - _busy_timeout=5000 : if DB is locked, wait up to 5 seconds
+		// - _foreign_keys=1    : enforce foreign key rules (safer relations)
 		db, err := sql.Open("sqlite", "file:memdb1?mode=memory&cache=shared&_busy_timeout=5000&_foreign_keys=1")
+		//
+		//On-disk database (hard / file-based):
+		//   "file:school.db?..."
+		// What it means:
+		// - SQLite stores data in a real file (school.db) on disk.
+		// - Data stays even after program stops (persistent).
+		// - Not ideal for tests unless you clear the tables, because old data remains and IDs keep increasing.
+		// db, err := sql.Open("sqlite", "file:school.db?_busy_timeout=5000&_foreign_keys=1")
 
 		// If opening the DB fails, save the error into initErr and stop initialization.
 		if err != nil {
@@ -76,7 +92,7 @@ func (s *server) initDBOnce() error {
 			    school_id INTEGER NOT NULL,
 			    teacher_id INTEGER NOT NULL, 
 			    FOREIGN KEY (school_id) REFERENCES schools(id),
-			    FOREIGN KEY (teacher_id) REFEENCES people(id)
+			    FOREIGN KEY (teacher_id) REFERENCES people(id)
 			);
         `)
 		if err != nil {
@@ -100,6 +116,11 @@ func (s *server) initDBOnce() error {
 			    FOREIGN KEY (student_id) REFERENCES people(id)
 			);
         `)
+		if err != nil {
+			_ = db.Close()
+			initErr = err
+			return
+		}
 
 		// Save the opened database handle into the server struct (s.db)
 		// So later handlers can do `s.db.Exec(...)` / `s.db.QueryRow(...)`.

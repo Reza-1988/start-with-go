@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"sync"
 )
@@ -156,6 +157,7 @@ func (s *server) handleConn(conn net.Conn) {
 			// 	- We try to send an error response back.
 			// 	- `_ = enc.Encode(...)` ignores the encode error (because if decoding failed, connection might already be broken).
 			// 	- Then return ends the function and closes the connection.
+
 			_ = enc.Encode(Response{
 				Status:  false,
 				Message: "Invalid request",
@@ -169,6 +171,8 @@ func (s *server) handleConn(conn net.Conn) {
 		resp := s.route(req)
 		// Send the response as JSON back to the client.
 		// Again we ignore encode errors because if the client disappears suddenly, there’s nothing useful to do here.
+		// inside handleConn loop:
+		log.Printf("method=%s status=%v msg=%s", req.Method, resp.Status, resp.Message) // TODO: this line after debug must be remove.
 		_ = enc.Encode(resp)
 	} // Loop continues, waiting for the next request on the same connection.
 }
@@ -186,8 +190,7 @@ func (s *server) route(req Request) Response {
 	case AddStudentToClassMethod:
 		return s.handleAddStudentToClass(req.Data)
 	case WhoAmIMethod:
-		return s.handleWhoAmI
-	// TODO: Not implemented it this step
+		return s.handleWhoAmI(req.Data)
 
 	// If the method is unknown/not implemented, return an error response.
 	default:

@@ -321,7 +321,7 @@ func (s *server) handleAddStudentToClass(data interface{}) Response {
 			Message: "bad payload",
 		}
 	}
-	if req.StudentId == 0 && req.ClassId == 0 {
+	if req.StudentId == 0 || req.ClassId == 0 {
 		return Response{
 			Status:  false,
 			Message: "student_id and class_id are required",
@@ -428,9 +428,9 @@ func (s *server) handleAddStudentToClass(data interface{}) Response {
 	// 	- If student already enrolled in another school's class, reject.
 	err = tx.QueryRow(`
 		SELECT 1
-		FROM class_sutdents cs
+		FROM class_students cs
 		JOIN classes c ON c.id = cs.class_id
-		where cs.student_id = ? AND c.school_id <> ?
+		WHERE cs.student_id = ? AND c.school_id <> ?
 		LIMIT 1
     `, req.StudentId, classSchoolID).Scan(&tmp)
 	// What data do we have here?
@@ -479,7 +479,7 @@ func (s *server) handleAddStudentToClass(data interface{}) Response {
 		}
 	}
 	// 6. Inser enrollment
-	_, err = tx.Exec(`INSERT INTO class_sutudents(class_id, student_id) VALUES(?, ?) `,
+	_, err = tx.Exec(`INSERT INTO class_students(class_id, student_id) VALUES(?, ?) `,
 		req.ClassId, req.StudentId)
 	if err != nil {
 		// Duplicate enrollment (PRIMARY KEY constraint)
@@ -527,8 +527,9 @@ func (s *server) handleAddStudentToClass(data interface{}) Response {
 			Status:  false,
 			Message: "db error",
 		}
-		defer rows.Close()
 	}
+	defer rows.Close()
+
 	var classIDs []uint // We collect all class IDs inside this slice
 	for rows.Next() {
 		var cid uint
@@ -582,13 +583,13 @@ func (s *server) handleWhoAmI(data interface{}) Response {
 	var p Person
 	err = s.db.QueryRow(`SELECT id, name FROM people WHERE id = ?`, req.Id).
 		Scan(&p.Id, &p.Name)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return Response{
-				Status:  false,
-				Message: "person not found",
-			}
+	if err == sql.ErrNoRows {
+		return Response{
+			Status:  false,
+			Message: "person not found",
 		}
+	}
+	if err != nil {
 		return Response{
 			Status:  false,
 			Message: "db error",
