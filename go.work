@@ -6,6 +6,7 @@ use (
 	./banking
 	./basics
 	./calculater-api
+	./calculater-api-net-dial
 	./control-machine
 	./cool-funcs
 	./cryptocurrency-checker
