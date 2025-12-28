@@ -1,4 +1,4 @@
-package calculater_api_net_dial
+package main
 
 import (
 	"encoding/json" // JSON encoder/decoder for sending requests and receiving responses over the TCP connection.

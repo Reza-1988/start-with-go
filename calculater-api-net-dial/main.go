@@ -3,8 +3,12 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"net"
+	"strconv"
+	"strings"
 )
 
 // Server represents our TCP calculator service.
@@ -135,5 +139,60 @@ func (s *Server) route(req Request) Response {
 			Result: "",
 			Error:  "Invalid number format",
 		}
+	}
+}
+
+// handleAdd validates and processes an "add" request.
+// It must:
+// - return "'numbers' parameter missing" if Numbers is missing/empty
+// - return "Invalid number format" if any token isn't a valid int64
+// - return "Overflow" if int64 addition overflows
+// - otherwise return the success "result" string and empty "error"
+func (s *Server) handleAdd(numbers string) Response {
+	// Treat empty (or whitespace-only) numbers as "missing" per the prompt.
+	if strings.TrimSpace(numbers) == "" {
+		return Response{
+			Result: "",
+			Error:  "'numbers' parameter missing",
+		}
+	}
+
+	// Split the comma-separated list into individual number strings.
+	parts := strings.Split(numbers, ",")
+
+	// We'll accumulate the sum here (real overflow-safe logic will come next).
+	var sum int64
+	for _, p := range parts {
+		// Trim spaces so "1, 2" works.
+		p = strings.TrimSpace(p)
+		// An empty token like "1,,2" is not "missing parameter"; it's a bad format.
+		if p == "" {
+			return Response{
+				Result: "",
+				Error:  "Invalid number format",
+			}
+		}
+		// Parse each token as int64 (base 10).
+		n, err := strconv.ParseInt(p, 10, 64)
+		if err != nil {
+			return Response{
+				Result: "",
+				Error:  "Invalid number format",
+			}
+		}
+		// Check int64 overflow BEFORE doing sum += n (Go would wrap otherwise).
+		if (n > 0 && sum > math.MaxInt64-n) || (n < 0 && sum < math.MinInt64-n) {
+			return Response{
+				Result: "",
+				Error:  "Overflow",
+			}
+		}
+		sum += n
+	}
+	math.Max
+	// Success response must match the exact required format.
+	return Response{
+		Result: fmt.Sprintf("The result of your query is: %d", sum),
+		Error:  "",
 	}
 }
