@@ -5,8 +5,8 @@ use (
 	./airport
 	./banking
 	./basics
-	./calculater-api
-	./calculater-api-net-dial
+	./calculator-api-net-dial
+	./calculator-api-net-http
 	./control-machine
 	./cool-funcs
 	./cryptocurrency-checker

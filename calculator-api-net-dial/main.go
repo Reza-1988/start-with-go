@@ -189,10 +189,78 @@ func (s *Server) handleAdd(numbers string) Response {
 		}
 		sum += n
 	}
-	math.Max
 	// Success response must match the exact required format.
 	return Response{
 		Result: fmt.Sprintf("The result of your query is: %d", sum),
+		Error:  "",
+	}
+}
+
+// handleSub validates and processes a "sub" request.
+//
+// Contract (from prompt):
+// - If numbers is missing/empty -> "'numbers' parameter missing"
+// - If any token is not a valid int64 -> "Invalid number format"
+// - If any subtraction overflows int64 -> "Overflow"
+// - Otherwise -> result message + empty error
+func (s *Server) handleSub(numbers string) Response {
+	// // Missing or empty numbers' parameter.
+	if strings.TrimSpace(numbers) == "" {
+		return Response{
+			Result: "",
+			Error:  "'numbers' parameter missing",
+		}
+	}
+	parts := strings.Split(numbers, ",")
+
+	// Subtraction must start from the first number
+	// Parse the first number to initialize the subtraction chain:
+	//	- result = first; then result -= each next number.
+	first := strings.TrimSpace(parts[0])
+	if first == "" {
+		return Response{
+			Result: "",
+			Error:  "Invalid number format",
+		}
+	}
+	res, err := strconv.ParseInt(first, 10, 64)
+	if err != nil {
+		return Response{
+			Result: "",
+			Error:  "Invalid number format",
+		}
+	}
+	// Process remaining numbers.
+	for _, p := range parts[1:] {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return Response{
+				Result: "",
+				Error:  "Invalid number format",
+			}
+		}
+
+		n, err := strconv.ParseInt(p, 10, 64)
+		if err != nil {
+			return Response{
+				Result: "",
+				Error:  "Invalid number format",
+			}
+		}
+		// Overflow check for int64 subtraction: sub - n
+		// - If n > 0, subtracting it can go below MinInt64.
+		// - If n < 0, subtracting it is like adding |n| and can exceed MaxInt64.
+		if (n > 0 && res < math.MinInt64+n) || (n < 0 && res > math.MaxInt64+n) {
+			return Response{
+				Result: "",
+				Error:  "Overflow",
+			}
+		}
+		res -= n
+	}
+	// Success response must match the exact required format.
+	return Response{
+		Result: fmt.Sprintf("The result of your query is: %d", res),
 		Error:  "",
 	}
 }
