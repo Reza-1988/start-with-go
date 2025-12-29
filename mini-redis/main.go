@@ -30,33 +30,11 @@ const (
 //     Eviction is based on "least Get() count" (least frequently accessed);
 //     ties are broken by earlier insertion time.
 type Redis interface {
-	Get(key string) (interface{}, error)
-	Set(key string, value interface{}, ttl TTL)
-
-	// Size returns the number of currently stored keys.
-	//
-	// Best practice for this challenge:
-	// - Expired keys should NOT be counted (either clean them up before counting,
-	//   or ignore them in the count).
-	Size() int
-
-	// Clear removes all keys and resets internal state.
-	//
-	// After Clear:
-	// - Size() should return 0
-	// - Any Get should return an error until keys are Set again.
-	Clear()
-
-	// Evict removes exactly one key using the eviction policy.
-	//
-	// Policy:
-	// - Remove the key with the lowest successful Get count.
-	// - If tied, remove the key inserted earlier.
-	//
-	// Notes:
-	// - Evict is typically called internally by Set when capacity is full,
-	//   but tests may also call it directly in hidden cases.
-	Evict()
+	Get(key string) (interface{}, error)        // Get returns the stored value for the given key.
+	Set(key string, value interface{}, ttl TTL) // Set stores (or updates) the value for a key with an optional TTL.
+	Size() int                                  // Size returns the number of currently stored keys.
+	Clear()                                     // Clear removes all keys and resets internal state.
+	Evict()                                     // Evict removes exactly one key using the eviction policy.
 }
 
 // entry represents a single stored record in our in-memory Redis-like DB.
@@ -309,4 +287,88 @@ func (db *DB) evictOneLocked() {
 		}
 	}
 	delete(db.items, victimKey)
+}
+
+// What is different between `Evict()` and `evictOneLocked()`?
+// - Evict() (interface method)
+// 		- This is a public method required by your Redis interface.
+// 		- It must be callable by tests (including hidden tests).
+// 		- It should handle locking and be safe to call concurrently.
+// - `evictOneLocked()` (helper function)
+// 		- This is a private/internal helper (lowercase name).
+// 		- It assumes the mutex is already locked (db.mu is held).
+// 		- It exists to avoid duplicating eviction logic inside both:
+// 			- `Set()` (which needs to evict while already holding the lock)
+// 			- `Evict()` (public method that will lock then call this)
+// - So the usual pattern is:
+// 		- `Set()` → lock → maybe call `evictOneLocked()` → unlock
+// 		- `Evict()` → lock → call `evictOneLocked()` → unlock
+
+// Size returns the number of currently stored (non-expired) keys.
+//
+// Expectations from tests:
+// - Size must reflect the live keys in the DB.
+// - Expired keys should not be counted.
+//
+// Concurrency:
+//   - Size may be called while other goroutines are calling Set/Get,
+//     so we lock the DB to protect the map and to safely clean up expired keys.
+func (db *DB) Size() int {
+	// Lock protects:
+	// - concurrent access to the items map
+	// - cleanupExpiredLocked() which may delete keys
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	// Remove expired keys before counting so Size() represents "active" entries only.
+	db.cleanupExpiredLocked()
+
+	// Return number of remaining keys.
+	return len(db.items)
+}
+
+// Clear removes all keys from the DB and resets internal bookkeeping.
+//
+// Expectations:
+// - After Clear(), Size() should be 0.
+// - Future Get() calls should return an error until keys are Set again.
+//
+// What Clear should NOT do:
+//   - It should NOT change the configured capacity (cap). Capacity is a DB setting,
+//     not part of the stored data.
+func (db *DB) Clear() {
+	// Lock to prevent concurrent map access while we clear state.
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	// Fast and clean way to remove everything:
+	// replace the map with a brand new empty map.
+	db.items = make(map[string]*entry)
+
+	// Reset insertion sequence counter (optional but tidy).
+	// This does not affect correctness because eviction uses relative ordering,
+	// and after Clear() there are no entries anyway.
+	db.seq = 0
+}
+
+// Evict removes exactly one key from the DB using the eviction policy.
+//
+// Policy (from tests):
+// - Evict the key with the lowest successful Get() count (gets).
+// - If tied, evict the key inserted earlier (oldest).
+//
+// Concurrency:
+// - Evict must be safe to call concurrently, so it takes the DB lock.
+// - Internally we call evictOneLocked(), which assumes the lock is already held.
+func (db *DB) Evict() {
+	// Lock the DB to safely inspect and modify the items map.
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	// Best practice: remove expired keys first so we don't evict a valid key
+	// while expired keys are still taking space.
+	db.cleanupExpiredLocked()
+
+	// Evict exactly one key according to the policy.
+	db.evictOneLocked()
 }
