@@ -30,29 +30,7 @@ const (
 //     Eviction is based on "least Get() count" (least frequently accessed);
 //     ties are broken by earlier insertion time.
 type Redis interface {
-	// Get returns the stored value for the given key.
-	//
-	// Returns:
-	// - (value, nil) if the key exists and has not expired.
-	// - (nil, error) if the key does not exist OR has expired.
-	//
-	// Side effects:
-	// - Successful Get should count as an access (used for eviction scoring).
 	Get(key string) (interface{}, error)
-
-	// Set stores (or updates) the value for a key with an optional TTL.
-	//
-	// TTL rules:
-	// - ttl == 0: the key never expires.
-	// - ttl > 0 : the key expires after ttl seconds.
-	//
-	// Capacity + eviction:
-	// - If inserting a NEW key would exceed capacity, the DB must evict one key first.
-	// - Eviction removes the least-accessed key (fewest successful Get calls).
-	// - If access counts are equal, evict the key inserted earlier.
-	//
-	// Concurrency:
-	// - Set may be called from many goroutines at the same time.
 	Set(key string, value interface{}, ttl TTL)
 
 	// Size returns the number of currently stored keys.
@@ -222,4 +200,113 @@ func (db *DB) Get(key string) (interface{}, error) {
 
 	// Return the stored value (not the *entry struct).
 	return e.value, nil
+}
+
+// Set stores (or updates) the value for a key with an optional TTL.
+//
+// TTL rules (from tests):
+// - ttl == 0 : key never expires.
+// - ttl > 0  : key expires after ttl seconds.
+//
+// Capacity + eviction rules (from tests):
+// - If inserting a NEW key would exceed capacity, evict exactly one key first.
+// - Evict the key with the smallest successful Get() count (gets).
+// - If tied on gets, evict the key inserted earlier (smallest inserted sequence).
+//
+// Concurrency:
+// - Set may be called concurrently, so we lock the DB for the whole operation.
+func (db *DB) Set(key string, value interface{}, ttl TTL) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	// Best practice: remove expired keys first so they don't block capacity
+	// and don't affect eviction decisions.
+	db.cleanupExpiredLocked()
+
+	// If key already exists and is not expired, we update it in place.
+	// Updating should NOT force eviction because DB size does not increase.
+	if e, ok := db.items[key]; ok {
+		e.value = value
+		// Update TTL:
+		// - ttl==0 => remove expiration (never expires)
+		// - ttl>0  => set a new expiration timestamp from now
+		if ttl <= 0 {
+			e.expireAt = time.Time{} // zero time -> no expiry
+		} else {
+			e.expireAt = time.Now().Add(time.Duration(ttl) * time.Second)
+		}
+		// NOTE: We keep e.gets and e.inserted unchanged on update.
+		// This is the least surprising behavior and works well with the eviction policy.
+		return
+	}
+
+	// This is a NEW key.
+	// If we are at capacity, we must evict one key before inserting.
+	if len(db.items) >= db.cap {
+		db.evictOneLocked()
+	}
+	// Creat a new enty with required metadata
+	db.seq++ // advance insertion sequence for deterministic tie-breaking.
+
+	newEntry := &entry{
+		value:    value,
+		gets:     0,      // new keys start with 0 successful Get hits
+		inserted: db.seq, // insertion order for tie-breaking on eviction
+	}
+	// Apply TTl settings.
+	if ttl > 0 {
+		newEntry.expireAt = time.Now().Add(time.Duration(ttl) * time.Second)
+		// If ttl==0, expireAt stays zero => never expires.
+	}
+	db.items[key] = newEntry
+}
+
+// cleanupExpiredLocked removes expired keys from the DB.
+// IMPORTANT: caller must hold db.mu.
+func (db *DB) cleanupExpiredLocked() {
+	now := time.Now()
+
+	for k, e := range db.items {
+		// Zero expireAT means never expires.
+		if e.expireAt.IsZero() {
+			continue
+		}
+		// if current time is after expireAt, key is expired -> remove it.
+		if now.After(e.expireAt) {
+			delete(db.items, k)
+		}
+	}
+}
+
+// evictOneLocked removes exactly one key using the eviction policy.
+// IMPORTANT: caller must hold db.mu.
+//
+// Policy:
+// - Evict smallest gets (least accessed).
+// - If tied, evict smallest inserted (oldest entry).
+func (db *DB) evictOneLocked() {
+	// If DB is empty, nothing to evict.
+	if len(db.items) == 0 {
+		return
+	}
+	var victimKey string
+	var victim *entry
+	first := true
+
+	for k, e := range db.items {
+		if first {
+			victimKey = k
+			victim = e
+			first = false
+			continue
+		}
+		// Compare eviction priority:
+		// 1) smaller gets => evict first
+		// 2) if gets equal, smaller inserted (older) => evict first
+		if e.gets < victim.gets || (e.gets == victim.gets && e.inserted < victim.inserted) {
+			victimKey = k
+			victim = e
+		}
+	}
+	delete(db.items, victimKey)
 }
