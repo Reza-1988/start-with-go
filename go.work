@@ -21,6 +21,7 @@ use (
 	./language-translator
 	./library-trouble
 	./milgram-experiment
+	./mini-redis
 	./nameless-problem
 	./old-school
 	./online-library
