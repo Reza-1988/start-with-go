@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"sync"
 )
@@ -72,6 +73,31 @@ type Client struct {
 	subsMu sync.Mutex
 }
 
+// - What is id field in Client?
+// 		- The id is a unique identifier for each client so that the server can distinguish each connection from the others
+// 	      (for logging, debugging, managing clients, etc.).
+//		- We usually get this identifier from the client-side address on TCP.
+// - What does conn.RemoteAddr().string() mean?
+//		- conn is a TCP connection (net.Conn)
+// 		- RemoteAddr() returns the address of the remote party (client)
+//		- Usually something like this: "192.168.1.10:53022"
+// 			- That is:
+// 				- Client IP: 192.168.1.10
+// 				- Port from which the client connected to the server: 53022 (temporary/ephemeral port)
+// 		- And String() only converts this address to a string.
+//	- Why is this a good option?
+// 		- Because for each TCP connection the IP:Port combination is usually unique.
+// 		- Even if two people connect from the same IP, their port will be different, so the id will be different.
+// 		- So without having to create a counter or UUID yourself, you have a ready-made ID.
+//	- What is this ID for?
+//		1. Logging / Debugging
+//		2. Maintaining clients on map
+//		3. Identifying which connection the message/request came from
+//	- Is it always really “unique”?
+// 		- For “connection ID” almost yes.
+//		- But if the client disconnects and reconnects, it may come with a new port and the id will change
+//	      (which is usually not a problem because it is a new connection).
+
 // NewServer constructs a Server configured to listen on the given address.
 //
 // It initializes internal maps/channels so the server is ready to Run().
@@ -89,11 +115,174 @@ func NewServer(address string) *Server {
 	}
 }
 
+// Run starts the TCP server and blocks, accepting connections until the server
+// is stopped.
+//
+// Responsibilities of Run (best-practice split of concerns):
+//   - Create and store the listener (so Stop() can close it).
+//   - Accept client connections in a loop.
+//   - Register each client in the server's connection registry.
+//   - Start a goroutine per client to handle JSON requests and async deliveries.
+//   - Exit gracefully when Stop() is called (listener closed / stopCh closed).
+//
+// Protocol handling (publish/subscribe/unsubscribe/close/shutdown) should be
+// implemented in s.handleClient; Run should stay focused on networking + lifecycle.
 func (s *Server) Run() error {
+	// Create the TCP listener. If this fails (e.g. port already in use),
+	// return the error so the test can fail early.
+	ln, err := net.Listen("tcp", s.Addr)
+	if err != nil {
+		return err
+	}
 
+	// Store the listener so Stop() can close it to unblock Accept().
+	s.ln = ln
+	for {
+		// Accept blocks until a new client connects or the listener is closed.
+		conn, err := ln.Accept()
+		if err != nil {
+			// If shutdown has started, Accept will typically fail because
+			// the listener is closed. In that case, exit Run cleanly.
+			select {
+			case <-s.stopCh:
+				return nil
+			default:
+			}
+			// net.ErrClosed is the canonical error when a listener is closed.
+			// Treat it as a normal shutdown path.
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			// For any other error, return it ( tests should see the failure).
+			return nil
+		}
+		// Wrap the raw connection in a Client to support safe JSON writes.
+		// (Encoder writes must be serialized per connection to avoid interleaving.)
+		c := &Client{
+			conn: conn,
+			enc:  json.NewEncoder(conn),
+			id:   conn.RemoteAddr().String(),
+			subs: make(map[string]struct{}),
+		}
+		// Track the client so GetClientConnections() can return active conns
+		// and Stop() can close all connections during shutdown.
+		s.clientsMu.Lock()
+		s.clients[c.id] = c
+		s.clientsMu.Unlock()
+
+		// Handle this connection concurrently.
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.handleClient(c) // request loop & protocol
+		}()
+	}
 }
 
-func (s *Server) Stop()
+// Stop gracefully shuts down the server.
+//
+// It is safe to call Stop multiple times. On shutdown it:
+//   - broadcasts a stop signal (by closing stopCh),
+//   - closes the listener to unblock Accept(),
+//   - closes all client connections to unblock per-client Decode loops,
+//   - waits for server goroutines to exit.
+func (s *Server) Stop() {
+	// `stopOnce.Do()` is of type `sync.Once`.
+	//	- This means that even if Stop() is called multiple times, the body inside it will only be executed once.
+	//	- So stopping again will not cause a panic (e.g. closing the channel again).
+	s.stopOnce.Do(func() {
+		// Broadcast shutdown to all goroutines that select on stopCh.
+		// 	- stopCh is a channel that goroutines may check inside select:
+		// 		- By closing it:
+		// 			- All goroutines waiting for <-stopCh will immediately wake up
+		// 			- and realize they need to exit
+		// 		- This is “broadcasting” the shutdown signal.
+		close(s.stopCh)
+
+		// Closing the listener unblocks Accept() in Run().
+		// 	- `ln` is the TCP listener (net.Listener) that gets stuck on `Accept()` in Run().
+		// 	- If you close the listener:
+		// 		- Accept() will throw an error and exit the block
+		// 		- And the new connection acceptance loop can terminate cleanly
+		// 	- `_ =` means we ignore the Close error (usually not important in shutdown).
+		if s.ln != nil {
+			_ = s.ln.Close()
+		}
+
+		// Snapshot client connections, then close them without holding the lock.
+		s.clientsMu.RLock()
+		clients := make([]*Client, 0, len(s.clients))
+		for _, c := range s.clients {
+			clients = append(clients, c)
+		}
+		s.clientsMu.RUnlock()
+
+		// Closing client conns unblocks json.Decoder.Decode() in handleClient.
+		for _, c := range clients {
+			_ = c.conn.Close()
+			// Why `_ = c.conn.Close()`?
+			//	- Because in shutdown:
+			// 	- Some connections may have already been closed
+			// 	- `Close()` may give an error
+			// 	- But for shutdown it usually doesn't matter; the goal is just to "close", so we ignore the error.
+		}
+
+		// Wait for all goroutines started by Run() to finish.
+		s.wg.Wait()
+	}) // End of `DO`
+}
+
+// Why isn't just close(stopCh) enough?
+// 	- Many servers have a goroutine for each client that works like this:
+// 	- 	```func (s *Server) handleClient(c *Client) {
+//          	dec := json.NewDecoder(c.conn)
+//				for {
+//        			var req Request
+//       			if err := dec.Decode(&req); err != nil {
+// 					// Here, when the connection is closed, Decode throws an error, and we exit the loop.
+//					return
+//        			}
+//        	// ... processing the request ...
+//    			}
+//			}```
+// - Note:
+//		- `dec.Decode()` usually waits for data to arrive from the network.
+//		- So if the client hasn't sent anything, this line can block for a long time (even forever).
+// 		- Now if you just close `stopCh`:
+// 			- The goroutine that is now stuck inside `Decode()` doesn't have a chance to check `stopCh` at all
+// 			- Because it hasn't reached a select or conditional check yet; it's stuck in I/O.
+// 		- So to get this goroutine out of the block, you need to make `Decode()` wake up.
+// - Solution: Closing the connection wakes up Decode
+//		```for _, c := range clients {
+//			_ = c.conn.Close()```
+//			}
+// 		- When you call `c.conn.Close()`:
+// 		1) Any goroutines that are currently reading/decoding on this connection…
+//			- It comes out of the block.
+// 			- `Decode()` returns an error (usually something like EOF or “use of closed network connection”)
+//		2) The `handleClient` loop that sees the error…
+// 			- returns
+// 			- The goroutine ends cleanly
+// 			- And if you have `wg.Done()`, `wg.Wait()` will eventually be freed
+// 		- That is: the main purpose of closing connections is to “unblock” goroutines that are stuck on the network.
+// Why do we take a "snapshot" and release the lock first?
+// 	- Important reason:
+// 		- If you hold the lock and start Close()ing connections at the same time, two problems can arise:
+// 		- Problem 1: Slowness/Stuckness of Others
+// 			- `Close()` is usually fast, but it is considered an "I/O operation" and is better not to do it under a lock.
+// 			- If you do it under a lock, all other goroutines that want to modify (or remove) clients will be stuck behind the lock.
+//		- Problem 2: Possible deadlock in cleanup
+// 			- It is very common for handleClient to want to remove itself from s.clients at the end of its work:
+// 			 ```defer func() {
+//					s.clientsMu.Lock()
+//					delete(s.clients, c.id)
+//					s.clientsMu.Unlock()
+//				}()
+// 			- Now imagine:
+// 				- `Stop()` holds the lock and is doing a `Close()`
+// 				- `Close()` causes handleClient to jump out and into defer and try to get `clientsMu.Lock()`
+// 				- But the lock is still in Stop()’s hands…
+// 				- This can cause a hang/deadlock or at least a severe slowdown.
 
 // GetTopic returns the Topic for the given name.
 //

@@ -5,6 +5,14 @@ import (
 	"sync"
 )
 
+// subscriber holds a client and the sequence number at which they subscribed.
+// A client should only receive messages with Seq > joinedSeq, so they do not
+// receive messages published before they subscribed.
+type subscriber struct {
+	client    *Client
+	joinedSeq int64
+}
+
 // Topic represents a named channel in the broker.
 //
 // Each topic owns its own message queue (a priority heap) and will later own
@@ -29,6 +37,18 @@ type Topic struct {
 	// Use RLock/RUnlock for read-only access and Lock/Unlock for mutations.
 	// Never hold this lock while performing network I/O (writes to client connections).
 	mu sync.RWMutex
+
+	// subscribers are the currently subscribed clients for this topic.
+	// Key: client ID (RemoteAddr string).
+	subscribers map[string]subscriber
+
+	// seq is a monotonically increasing counter for messages in this topic.
+	// It is used to ensure "no old messages on subscribe".
+	seq int64
+
+	// notify wakes the topic dispatcher when new messages arrive.
+	// Buffered to avoid blocking publishers.
+	notify chan struct{}
 }
 
 // NewTopic creates a new Topic with its own independent priority message queue.
@@ -43,9 +63,53 @@ func NewTopic(name string) *Topic {
 
 		// MQ is a heap-initialized priority queue (container/heap).
 		// Note: the queue itself is not concurrency-safe; Topic.mu must guard access.
-		MQ: queue.NewMessageQueue(),
+		MQ:          queue.NewMessageQueue(),
+		subscribers: make(map[string]subscriber),
+		notify:      make(chan struct{}, 1),
 	}
 }
+
+// What exactly is notify?
+//		- Its type is `chan struct{}`, meaning it is a channel that does not carry any data; it only "signals".
+// 		- `struct{}` is very lightweight and common for signaling because it is zero bytes.
+// Why is it there?
+// 		- You usually have a goroutine (dispatcher) for each topic whose job is to:
+// 			- Wait for new messages to arrive
+// 			- When they arrive, take the messages from MQ and deliver them to subscribers
+// 			- If there is no notify, the dispatcher should either:
+// 				- Continuously loop and check if the MQ is empty (busy-wait → burns CPU)
+// 				- Or work with more complex sleep/poll methods
+// 			- notify makes the dispatcher sleep and wake up only when a new message arrives.
+// 	Why is it “Buffered”? What is the advantage?
+// 		- Suppose the publisher publishes a message and wants to wake up the dispatcher:
+// 		`t.notify <- struct{}`
+// 			- If the channel was unbuffered (`make(chan struct{})`):
+// 				- If the dispatcher is not ready to receive at this moment, the publisher will block and get stuck.
+// 			- But since it has a buffer of 1:
+// 				- If the buffer is empty, the signal goes into the buffer and the publisher continues immediately.
+// 				- If the buffer is full (i.e. there is already a signal and the dispatcher has not read it yet),
+//				  retransmission is not necessary, and it is better not to block.
+// 			- Usually the correct pattern is:
+// 			 ```select {
+//				case t.notify <- struct{}:
+//				default:
+//				}```
+//			- That is:
+// 				- If there is room, send a signal
+// 				- If there is no room (the buffer is full), don't worry; because "this one signal" is enough to wake up the dispatcher.
+// How does the dispatcher use it?
+// 		- A common dispatcher pattern is:
+// 		 ```for {
+//				select {
+//				case <-t.notify:
+//					// new message arrived, go read from MQ and send
+//				case <-stopCh:
+//					return
+//				}
+//			}
+//		- This way:
+//			- the dispatcher does not consume CPU until a message arrives
+// 			- when a message arrives, it wakes up and drains all existing messages
 
 // GetMessageQueue returns the underlying concrete *queue.MessageQueue used by this Topic.
 //
