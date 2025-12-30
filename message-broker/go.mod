@@ -1,4 +1,4 @@
-module github.com/Reza-1988/start-with-go/mini-rabitmq
+module QueraMQ
 
 go 1.21.0
 
