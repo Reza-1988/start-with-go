@@ -1,6 +1,8 @@
 package server
 
 import (
+	"QueraMQ/queue"
+	"container/heap"
 	"encoding/json"
 	"errors"
 	"net"
@@ -97,6 +99,14 @@ type Client struct {
 // 		- For “connection ID” almost yes.
 //		- But if the client disconnects and reconnects, it may come with a new port and the id will change
 //	      (which is usually not a problem because it is a new connection).
+
+// Send encodes v as JSON to the client connection.
+// It serializes all writes to prevent interleaved JSON messages.
+func (c *Client) Send(v any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.enc.Encode(v)
+}
 
 // NewServer constructs a Server configured to listen on the given address.
 //
@@ -317,7 +327,175 @@ func (s *Server) GetTopic(topicName string) (*Topic, bool) {
 	// Create and store the new topic.
 	t = NewTopic(topicName)
 	s.topics[topicName] = t
+
+	// Start per-topic dispatcher so messages are delivered in priority order.
+	//
+	// 	- wg is a sync.WaitGroup. With Add(1) you say:
+	// 		- "I'm starting a new goroutine; so the number of running tasks will be +1."
+	// 	- This will cause the server to wait until this goroutine has finished completely when you later call Stop() or shutdown and `s.wg.Wait()` is called.
+	//	- If you don't add(1), `Wait()` may return early and the server will think everything is finished, while the dispatcher is still running.
+	s.wg.Add(1)
+	go func() {
+		// `Done()` is the exact opposite of `Add(1)`: that is, when the goroutine finishes:
+		// 	- "This job is done; WaitGroup counter is set to -1."
+		//	- And because it is defer, even if the topicLoop finishes early with error/return, Done() will still be executed and wg will not get stuck.
+		defer s.wg.Done()
+		// This is where the main dispatcher logic is implemented. Typically, topicLoop does the following:
+		// 	- Waits on `t.notify `or `stopCh`
+		// 	- When a new message arrives, it pops from t.MQ (heap)
+		// 	- Sends messages to the subscriptions of the same topic (observing joinedSeq etc.)
+		// Why does this only happen when the topic is newly created?
+		// 	- Because the dispatcher needs to be started only once for each topic.
+		// 	- If a topic already existed, the dispatcher would have already been started.
+		s.topicLoop(t)
+	}()
+	// This piece of goroutine means:
+	// Since we have just created a new topic, start a separate worker/dispatcher for it to consume and
+	// distribute messages from this topic in order (priority).
+	// And for shutdown, use WaitGroup to make sure the server waits until this worker finishes.
+
 	return t, false // topic was newly created
+}
+
+// topicLoop is the per-topic "dispatcher" goroutine.
+//
+// Why we need this loop (big picture):
+//   - Producers publish messages into a topic's priority queue (heap).
+//   - Consumers subscribed to the topic should receive messages immediately.
+//   - Messages must be delivered in PRIORITY order (higher priority first).
+//
+// Instead of delivering directly inside the publish handler (which would mix
+// concerns and risk blocking on slow clients), we:
+//  1. Push messages into the topic heap quickly.
+//  2. Notify this loop via t.notify.
+//  3. This loop pops messages in priority order and broadcasts them.
+//
+// Shutdown behavior:
+//   - When s.stopCh is closed (Stop/shutdown), this loop exits gracefully.
+func (s *Server) topicLoop(t *Topic) {
+	for {
+		select {
+		// t.notify is a "wake up" signal: at least one new message was published.
+		// It does not carry the message itself; it only tells us to check the heap.
+		case <-t.notify:
+
+			// Drain all available messages from the heap.
+			//
+			// We drain in a loop because:
+			//   - Multiple messages can be published before we wake up.
+			//   - t.notify may be buffered / coalesced (we might receive only one signal
+			//     for many publishes), so we must empty the heap until it's truly empty.
+			for {
+				// popMessage pops the highest-priority message (smallest Priority number)
+				// from the topic heap. It returns nil when the heap is empty.
+				msg := s.popMessage(t)
+				if msg == nil {
+					break // nothing left to deliver right now
+				}
+
+				// snapshotSubscribers returns a slice of clients who should receive this
+				// message, based on "subscribe after publish should not receive old messages".
+				//
+				// Important best practice: we take a snapshot while holding locks, then
+				// release locks before doing network I/O. Network writes can block, and
+				// holding locks during I/O can deadlock or stall the entire server.
+				subs := s.snapshotSubscribers(t, msg.Seq)
+
+				// Broadcast the message to all eligible subscribers.
+				//
+				// We ignore send errors here because delivery is "best effort":
+				// if a client disconnected or is broken, Send will fail and the client
+				// cleanup path (handleClient/removeClient) should eventually remove it.
+				for _, c := range subs {
+					_ = c.Send(map[string]any{
+						"action": "deliver",
+						"message": map[string]any{
+							// message_id must be a string in the JSON protocol.
+							"message_id": msg.ID.String(),
+							"topic":      msg.Topic,
+							"content":    msg.Content,
+							"priority":   msg.Priority,
+						},
+					})
+				}
+			}
+
+		// stopCh is closed during server shutdown. Selecting on it lets the loop
+		// exit cleanly without leaking goroutines.
+		case <-s.stopCh:
+			return
+		}
+	}
+}
+
+// popMessage removes and returns the next message to be delivered from a topic.
+//
+// Why this exists:
+//   - The topic's message queue is implemented as a heap (priority queue).
+//   - To deliver messages in priority order, we must "pop" from the heap.
+//   - heap.Pop returns the highest-priority element according to the heap's Less()
+//     method (in this project: smaller Priority value is higher priority).
+//
+// Concurrency:
+//   - container/heap is NOT safe for concurrent use.
+//   - Therefore we must hold the topic lock while checking length and popping.
+//
+// Returns:
+//   - The next *queue.Message if available.
+//   - nil if the heap is empty (no message to deliver).
+func (s *Server) popMessage(t *Topic) *queue.Message {
+	// We take an exclusive lock because heap.Pop mutates the heap/slice.
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Fast empty check to avoid calling heap.Pop on an empty heap.
+	if t.MQ.Len() == 0 {
+		return nil
+	}
+
+	// heap.Pop removes and returns the top element of the heap.
+	// We type-assert because heap.Interface uses `any` (interface{}) for Pop.
+	return heap.Pop(t.MQ).(*queue.Message)
+}
+
+// snapshotSubscribers returns a point-in-time list of clients that should
+// receive a specific message.
+//
+// Why this function exists:
+// The assignment requires that when a client subscribes to a topic, it must NOT
+// receive messages that were published before the subscription.
+//
+// We enforce that rule by tracking, for each subscriber, the topic sequence value
+// at the moment they subscribed (joinedSeq). Each published message gets its own
+// sequence number (msgSeq). A subscriber is eligible if:
+//
+//	joinedSeq < msgSeq
+//
+// Meaning: "this subscriber joined before this message was published".
+//
+// Concurrency and best practice:
+//   - We use RLock because we only need to read the subscribers map.
+//   - We return a *snapshot* slice so the caller can release the lock before
+//     performing network I/O (sending messages), which might block.
+func (s *Server) snapshotSubscribers(t *Topic, msgSeq int64) []*Client {
+	// Read lock: safe concurrent access to the subscribers map.
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	// Preallocate output slice based on current subscriber count.
+	// This is efficient and avoids repeated reallocations.
+	out := make([]*Client, 0, len(t.subscribers))
+
+	// Iterate over current subscribers and select only those who are eligible
+	// for this message according to the "no old messages on subscribe" rule.
+	for _, sub := range t.subscribers {
+		if sub.joinedSeq < msgSeq {
+			out = append(out, sub.client)
+		}
+	}
+
+	// The caller can now send to these clients without holding t.mu.
+	return out
 }
 
 // GetClientConnections returns a snapshot of all active client connections.
