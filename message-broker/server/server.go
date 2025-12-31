@@ -5,8 +5,11 @@ import (
 	"container/heap"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"sync"
+
+	"github.com/google/uuid"
 )
 
 // Server is a TCP message broker.
@@ -99,14 +102,6 @@ type Client struct {
 // 		- For “connection ID” almost yes.
 //		- But if the client disconnects and reconnects, it may come with a new port and the id will change
 //	      (which is usually not a problem because it is a new connection).
-
-// Send encodes v as JSON to the client connection.
-// It serializes all writes to prevent interleaved JSON messages.
-func (c *Client) Send(v any) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.enc.Encode(v)
-}
 
 // NewServer constructs a Server configured to listen on the given address.
 //
@@ -357,147 +352,6 @@ func (s *Server) GetTopic(topicName string) (*Topic, bool) {
 	return t, false // topic was newly created
 }
 
-// topicLoop is the per-topic "dispatcher" goroutine.
-//
-// Why we need this loop (big picture):
-//   - Producers publish messages into a topic's priority queue (heap).
-//   - Consumers subscribed to the topic should receive messages immediately.
-//   - Messages must be delivered in PRIORITY order (higher priority first).
-//
-// Instead of delivering directly inside the publish handler (which would mix
-// concerns and risk blocking on slow clients), we:
-//  1. Push messages into the topic heap quickly.
-//  2. Notify this loop via t.notify.
-//  3. This loop pops messages in priority order and broadcasts them.
-//
-// Shutdown behavior:
-//   - When s.stopCh is closed (Stop/shutdown), this loop exits gracefully.
-func (s *Server) topicLoop(t *Topic) {
-	for {
-		select {
-		// t.notify is a "wake up" signal: at least one new message was published.
-		// It does not carry the message itself; it only tells us to check the heap.
-		case <-t.notify:
-
-			// Drain all available messages from the heap.
-			//
-			// We drain in a loop because:
-			//   - Multiple messages can be published before we wake up.
-			//   - t.notify may be buffered / coalesced (we might receive only one signal
-			//     for many publishes), so we must empty the heap until it's truly empty.
-			for {
-				// popMessage pops the highest-priority message (smallest Priority number)
-				// from the topic heap. It returns nil when the heap is empty.
-				msg := s.popMessage(t)
-				if msg == nil {
-					break // nothing left to deliver right now
-				}
-
-				// snapshotSubscribers returns a slice of clients who should receive this
-				// message, based on "subscribe after publish should not receive old messages".
-				//
-				// Important best practice: we take a snapshot while holding locks, then
-				// release locks before doing network I/O. Network writes can block, and
-				// holding locks during I/O can deadlock or stall the entire server.
-				subs := s.snapshotSubscribers(t, msg.Seq)
-
-				// Broadcast the message to all eligible subscribers.
-				//
-				// We ignore send errors here because delivery is "best effort":
-				// if a client disconnected or is broken, Send will fail and the client
-				// cleanup path (handleClient/removeClient) should eventually remove it.
-				for _, c := range subs {
-					_ = c.Send(map[string]any{
-						"action": "deliver",
-						"message": map[string]any{
-							// message_id must be a string in the JSON protocol.
-							"message_id": msg.ID.String(),
-							"topic":      msg.Topic,
-							"content":    msg.Content,
-							"priority":   msg.Priority,
-						},
-					})
-				}
-			}
-
-		// stopCh is closed during server shutdown. Selecting on it lets the loop
-		// exit cleanly without leaking goroutines.
-		case <-s.stopCh:
-			return
-		}
-	}
-}
-
-// popMessage removes and returns the next message to be delivered from a topic.
-//
-// Why this exists:
-//   - The topic's message queue is implemented as a heap (priority queue).
-//   - To deliver messages in priority order, we must "pop" from the heap.
-//   - heap.Pop returns the highest-priority element according to the heap's Less()
-//     method (in this project: smaller Priority value is higher priority).
-//
-// Concurrency:
-//   - container/heap is NOT safe for concurrent use.
-//   - Therefore we must hold the topic lock while checking length and popping.
-//
-// Returns:
-//   - The next *queue.Message if available.
-//   - nil if the heap is empty (no message to deliver).
-func (s *Server) popMessage(t *Topic) *queue.Message {
-	// We take an exclusive lock because heap.Pop mutates the heap/slice.
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	// Fast empty check to avoid calling heap.Pop on an empty heap.
-	if t.MQ.Len() == 0 {
-		return nil
-	}
-
-	// heap.Pop removes and returns the top element of the heap.
-	// We type-assert because heap.Interface uses `any` (interface{}) for Pop.
-	return heap.Pop(t.MQ).(*queue.Message)
-}
-
-// snapshotSubscribers returns a point-in-time list of clients that should
-// receive a specific message.
-//
-// Why this function exists:
-// The assignment requires that when a client subscribes to a topic, it must NOT
-// receive messages that were published before the subscription.
-//
-// We enforce that rule by tracking, for each subscriber, the topic sequence value
-// at the moment they subscribed (joinedSeq). Each published message gets its own
-// sequence number (msgSeq). A subscriber is eligible if:
-//
-//	joinedSeq < msgSeq
-//
-// Meaning: "this subscriber joined before this message was published".
-//
-// Concurrency and best practice:
-//   - We use RLock because we only need to read the subscribers map.
-//   - We return a *snapshot* slice so the caller can release the lock before
-//     performing network I/O (sending messages), which might block.
-func (s *Server) snapshotSubscribers(t *Topic, msgSeq int64) []*Client {
-	// Read lock: safe concurrent access to the subscribers map.
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	// Preallocate output slice based on current subscriber count.
-	// This is efficient and avoids repeated reallocations.
-	out := make([]*Client, 0, len(t.subscribers))
-
-	// Iterate over current subscribers and select only those who are eligible
-	// for this message according to the "no old messages on subscribe" rule.
-	for _, sub := range t.subscribers {
-		if sub.joinedSeq < msgSeq {
-			out = append(out, sub.client)
-		}
-	}
-
-	// The caller can now send to these clients without holding t.mu.
-	return out
-}
-
 // GetClientConnections returns a snapshot of all active client connections.
 //
 // The returned slice is a point-in-time view: clients may connect/disconnect
@@ -513,4 +367,294 @@ func (s *Server) GetClientConnections() []net.Conn {
 		conns = append(conns, c.conn)
 	}
 	return conns
+}
+
+// handleClient is the per-connection request loop.
+//
+// It continuously reads JSON requests from one TCP client (producer or consumer)
+// and performs the requested action until the client disconnects or asks to close.
+//
+// Why this loop is needed:
+//   - Clients keep a long-lived TCP connection.
+//   - Over that single connection they can send multiple requests (publish/subscribe/...).
+//   - The server must respond and also may asynchronously deliver messages.
+//
+// Protocol rules enforced (per assignment):
+//   - subscribe/unsubscribe require "topic".
+//   - publish requires "message" and message.topic/content/priority.
+//   - success => {"status":"ok"}
+//   - errors  => {"error":"..."}
+//   - unknown action => {"error":"unknown action"}
+//   - close_connection => remove from all topics then close
+//   - shutdown => graceful server Stop()
+func (s *Server) handleClient(c *Client) {
+	// Decoder reads a stream of JSON objects from the TCP connection.
+	// Each client request is one JSON object encoded by json.Encoder on the client side.
+	dec := json.NewDecoder(c.conn)
+
+	// Always clean up server state when this handler returns:
+	//   - remove client from server registry
+	//   - unsubscribe from all topics
+	//   - close the TCP connection
+	//
+	// This runs for normal disconnects and also for error paths.
+	defer s.removeClient(c)
+
+	for {
+		// Decode the next request object from the TCP stream.
+		// Decode blocks until:
+		//   - a full JSON value arrives, or
+		//   - the connection is closed, or
+		//   - invalid JSON is received.
+		var req clientRequest
+		if err := dec.Decode(&req); err != nil {
+			// io.EOF means the peer closed the connection cleanly.
+			// Any other decode error is treated as "connection broken/invalid input".
+			// Either way, we stop handling this client and let deferred cleanup run.
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			return
+		}
+
+		// Route by action. Each case implements one part of the broker protocol.
+		switch req.Action {
+
+		case "subscribe":
+			// Validate required field.
+			if req.Topic == "" {
+				_ = c.Send(map[string]any{"error": "topic is required"})
+				continue
+			}
+
+			// GetTopic creates the topic if it doesn't exist.
+			t, _ := s.GetTopic(req.Topic)
+
+			// Record subscription *at the current sequence* to enforce:
+			// "subscribers do not receive messages published before they subscribed".
+			//
+			// joinedSeq == current t.seq, and later snapshotSubscribers uses
+			// joinedSeq < msgSeq to decide eligibility.
+			t.mu.Lock()
+			t.subscribers[c.id] = subscriber{client: c, joinedSeq: t.seq}
+			t.mu.Unlock()
+
+			// Track this topic membership on the client as well, so close_connection
+			// can quickly remove the client from all topics without scanning all topics.
+			c.subsMu.Lock()
+			c.subs[req.Topic] = struct{}{}
+			c.subsMu.Unlock()
+
+			// Protocol requires an OK response on successful subscribe.
+			_ = c.Send(map[string]any{"status": "ok"})
+
+		case "unsubscribe":
+			// Validate required field.
+			if req.Topic == "" {
+				_ = c.Send(map[string]any{"error": "topic is required"})
+				continue
+			}
+
+			// Remove the client from the topic's subscriber set.
+			// If the topic does not exist, the spec does not demand an error,
+			// so treating it as a no-op and returning OK is acceptable.
+			s.topicsMu.RLock()
+			t := s.topics[req.Topic]
+			s.topicsMu.RUnlock()
+			if t != nil {
+				t.mu.Lock()
+				delete(t.subscribers, c.id)
+				t.mu.Unlock()
+			}
+
+			// Also remove membership from the client's subscription tracking.
+			c.subsMu.Lock()
+			delete(c.subs, req.Topic)
+			c.subsMu.Unlock()
+
+			// Protocol requires an OK response on successful unsubscribe.
+			_ = c.Send(map[string]any{"status": "ok"})
+
+		case "publish":
+			// Validate publish request according to the exact required error messages.
+			//
+			// Note: we distinguish between:
+			//   - message missing entirely => "message is required"
+			//   - message exists but fields missing => specific errors
+			if req.Message == nil {
+				_ = c.Send(map[string]any{"error": "message is required"})
+				continue
+			}
+			if req.Message.Topic == "" {
+				_ = c.Send(map[string]any{"error": "topic is required"})
+				continue
+			}
+			if req.Message.Content == "" {
+				_ = c.Send(map[string]any{"error": "message content is required"})
+				continue
+			}
+			// Priority is a pointer so we can detect "missing" vs "present".
+			// If the JSON omitted "priority", Priority will be nil.
+			if req.Message.Priority == nil {
+				_ = c.Send(map[string]any{"error": "priority is required"})
+				continue
+			}
+
+			// Ensure the topic exists (create if missing).
+			t, _ := s.GetTopic(req.Message.Topic)
+
+			// Generate a UUID v4 for the message ID.
+			// (The assignment explicitly wants UUID.)
+			id, err := uuid.NewRandom()
+			if err != nil {
+				// Not in the spec, but returning a clear error is helpful.
+				_ = c.Send(map[string]any{"error": "cannot generate message id"})
+				continue
+			}
+
+			// Assign a per-topic sequence number in a critical section.
+			// This sequence is used to enforce "no old messages on subscribe".
+			//
+			// We also push into the heap while holding the topic lock because
+			// heap operations are not concurrency-safe.
+			t.mu.Lock()
+			t.seq++
+			seq := t.seq
+
+			msg := &queue.Message{
+				ID:       id,
+				Topic:    req.Message.Topic,
+				Content:  req.Message.Content,
+				Priority: *req.Message.Priority,
+				Seq:      seq,
+			}
+
+			// Push into the per-topic heap (priority queue).
+			heap.Push(t.MQ, msg)
+			t.mu.Unlock()
+
+			// Notify the dispatcher that there is work to do.
+			// Non-blocking send is important: we don't want a publish request
+			// to hang if the dispatcher is already awake or the buffer is full.
+			select {
+			case t.notify <- struct{}{}:
+			default:
+			}
+
+			// Protocol requires OK response on successful publish.
+			_ = c.Send(map[string]any{"status": "ok"})
+
+		case "close_connection":
+			// Client requests to close its connection.
+			//
+			// We acknowledge (optional but friendly), then return.
+			// Returning triggers deferred cleanup (removeClient), which unsubscribes
+			// from all topics and closes the connection.
+			_ = c.Send(map[string]any{"status": "ok"})
+			return
+
+		case "shutdown":
+			// Client requests server shutdown (graceful shutdown).
+			//
+			// We acknowledge and then trigger Stop().
+			// Stop() may wait on goroutines; calling it in a goroutine avoids the risk
+			// of deadlock if Stop waits for this handler to exit.
+			_ = c.Send(map[string]any{"status": "ok"})
+			go s.Stop()
+			return
+
+		default:
+			// Any other action is invalid per spec.
+			_ = c.Send(map[string]any{"error": "unknown action"})
+		}
+	}
+}
+
+// removeClient cleans up all server-side state for a client connection.
+//
+// This function is called when a client disconnects (EOF), sends close_connection,
+// or when the server is shutting down. It ensures we don't leak memory or keep
+// stale subscribers in topics.
+//
+// What it does (in safe order):
+//  1. Remove client from the server-wide clients registry.
+//  2. Read and clear the client's subscribed topic list (snapshot).
+//  3. For each subscribed topic, remove the client from that topic's subscriber set.
+//  4. Close the underlying TCP connection.
+//
+// Idempotency:
+// It is safe to call more than once because deleting from maps is a no-op if
+// the key doesn't exist, and closing an already-closed connection just returns an error.
+// (We ignore that error here.)
+func (s *Server) removeClient(c *Client) {
+	// --- 1) Remove from server registry ---
+	// Protect the clients map with the server-level lock because other goroutines
+	// may be iterating it (GetClientConnections) or adding clients (Run).
+	s.clientsMu.Lock()
+	delete(s.clients, c.id)
+	s.clientsMu.Unlock()
+
+	// --- 2) Snapshot subscribed topics ---
+	// We keep per-client subscription tracking so we can efficiently unsubscribe
+	// the client from *only* the topics they joined, rather than scanning every topic.
+	//
+	// We snapshot under lock, then release the lock before touching topics.
+	// This avoids holding the client lock while doing slower operations.
+	c.subsMu.Lock()
+	topics := make([]string, 0, len(c.subs))
+	for tn := range c.subs {
+		topics = append(topics, tn)
+	}
+
+	// Clear the subscription map to make repeated calls cheap and truly idempotent.
+	// Also prevents double work if removeClient is triggered twice by different paths.
+	c.subs = make(map[string]struct{})
+	c.subsMu.Unlock()
+
+	// --- 3) Remove from each topic ---
+	// We deliberately do NOT call GetTopic here because cleanup should not create topics.
+	for _, tn := range topics {
+		// Lookup the topic under the server topics read lock.
+		s.topicsMu.RLock()
+		t := s.topics[tn]
+		s.topicsMu.RUnlock()
+		if t == nil {
+			continue // topic may have been removed or never existed
+		}
+
+		// Remove the client from this topic's subscriber registry.
+		// Write lock is needed because we're mutating the subscribers map.
+		t.mu.Lock()
+		delete(t.subscribers, c.id)
+		t.mu.Unlock()
+	}
+
+	// --- 4) Close the TCP connection ---
+	// Closing the connection unblocks any goroutine currently blocked on reading
+	// from this connection (json.Decoder.Decode) and allows graceful shutdown.
+	_ = c.conn.Close()
+}
+
+// Send writes a single JSON value to the client connection.
+//
+// Why this method is necessary:
+// In this broker, multiple goroutines may need to write to the same client
+// connection concurrently, for example:
+//   - the per-connection handler goroutine replying {"status":"ok"} / {"error":...}
+//   - the topic dispatcher goroutine delivering {"action":"deliver", ...}
+//
+// json.Encoder (and the underlying net.Conn writer) is NOT safe for concurrent
+// use. Without synchronization, two goroutines can interleave bytes on the TCP
+// stream, producing invalid JSON and causing the client-side json.Decoder to fail.
+//
+// This method prevents that by serializing writes with a mutex: only one Encode
+// runs at a time per client.
+func (c *Client) Send(v any) error {
+	// Lock ensures only one goroutine writes to this connection at a time.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Encode writes JSON followed by a newline. This "one JSON object per line"
+	// framing works well over TCP when the peer uses json.Decoder.Decode().
+	return c.enc.Encode(v)
 }
